@@ -8,7 +8,8 @@ module Main ( main ) where
 
 -- base
 import Data.Bits
-import Data.Foldable ( for_ )
+import Data.Ord ( Down(..) )
+import Data.List
 import Data.Traversable ( for )
 import qualified Foreign
 import qualified Foreign.C
@@ -22,6 +23,7 @@ import qualified SDL.Video.Vulkan
 -- vulkan-api
 import qualified Graphics.Vulkan as Vulkan
 import qualified Graphics.Vulkan.Core_1_0 as Vulkan
+import qualified Graphics.Vulkan.Ext.VK_KHR_surface as Vulkan
 import qualified Graphics.Vulkan.Ext.VK_KHR_swapchain as Vulkan
 
 
@@ -59,6 +61,17 @@ main = do
     putStrLn "Creating logical device"
       *> createLogicalDevice physicalDevice queueFamilyIndex
 
+  surface <-
+    SDL.Video.Vulkan.vkCreateSurface
+      window
+      ( Foreign.castPtr vulkanInstance )
+
+  swapchain <-
+    createSwapchain physicalDevice device surface
+
+  images <-
+    getSwapchainImages device swapchain
+
   fail "TODO"
 
   where
@@ -81,7 +94,9 @@ createWindow :: IO SDL.Window
 createWindow =
   SDL.createWindow
     "Vulkan Quake 3"
-    SDL.defaultWindow { SDL.windowVulkan = True }
+    SDL.defaultWindow
+      { SDL.windowVulkan = True
+      }
 
 
 createVulkanInstance :: [ Vulkan.CString ] -> IO Vulkan.VkInstance
@@ -338,3 +353,203 @@ createLogicalDevice physicalDevice queueFamilyIndex = do
       >>= throwVkResult
 
     Foreign.peek devicePtr
+
+
+createSwapchain
+  :: Vulkan.VkPhysicalDevice
+  -> Vulkan.VkDevice
+  -> SDL.Video.Vulkan.VkSurfaceKHR
+  -> IO Vulkan.VkSwapchainKHR
+createSwapchain physicalDevice device surface = do
+  surfaceCapabilities <-
+    Foreign.Marshal.alloca $ \ptr -> do
+      Vulkan.vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+        physicalDevice
+        ( Vulkan.VkPtr surface )
+        ptr
+        >>= throwVkResult
+
+      Foreign.peek ptr
+
+  minImageCount <-
+    Vulkan.readField @"minImageCount" ( Vulkan.unsafePtr surfaceCapabilities )
+
+  currentExtent <-
+    Vulkan.readField @"currentExtent" ( Vulkan.unsafePtr surfaceCapabilities )
+
+  currentTransform <-
+    Vulkan.readField @"currentTransform" ( Vulkan.unsafePtr surfaceCapabilities )
+
+  surfaceFormats <-
+    Foreign.Marshal.alloca $ \surfaceFormatCountPtr -> do
+      Vulkan.vkGetPhysicalDeviceSurfaceFormatsKHR
+        physicalDevice
+        ( Vulkan.VkPtr surface )
+        surfaceFormatCountPtr
+        Foreign.nullPtr
+        >>= throwVkResult
+
+      surfaceFormatCount <-
+        fromIntegral <$> Foreign.peek surfaceFormatCountPtr
+
+      Foreign.Marshal.allocaArray surfaceFormatCount $ \surfaceFormatsPtr -> do
+        Vulkan.vkGetPhysicalDeviceSurfaceFormatsKHR
+          physicalDevice
+          ( Vulkan.VkPtr surface )
+          surfaceFormatCountPtr
+          surfaceFormatsPtr
+          >>= throwVkResult
+
+        Foreign.peekArray surfaceFormatCount surfaceFormatsPtr
+
+  putStrLn "??"
+
+  scoredFormats <-
+    for surfaceFormats $ \surfaceFormat -> do
+      format <-
+        Vulkan.readField @"format" ( Vulkan.unsafePtr surfaceFormat )
+
+      colorSpace <-
+        Vulkan.readField @"colorSpace" ( Vulkan.unsafePtr surfaceFormat )
+
+      let
+        score :: Int
+        score =
+          sum
+            [ if format == Vulkan.VK_FORMAT_B8G8R8A8_UNORM then 1 else 0
+            , if colorSpace == Vulkan.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR then 1 else 0
+            ]
+
+      return ( score, format, colorSpace )
+
+  ( format, colorSpace ) <-
+    case sortOn ( \( score, _, _ ) -> Down score ) scoredFormats of
+      [] ->
+        fail "No formats found"
+
+      ( _score, format, colorSpace ) : _ ->
+        return ( format, colorSpace )
+
+  swapchainCreateInfo <-
+    Vulkan.newVkData $ \ptr -> do
+      Vulkan.writeField
+        @"sType"
+        ptr
+        Vulkan.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR
+
+      Vulkan.writeField
+        @"pNext"
+        ptr
+        Foreign.nullPtr
+
+      Vulkan.writeField
+        @"surface"
+        ptr
+        ( Vulkan.VkPtr surface )
+
+      Vulkan.writeField
+        @"minImageCount"
+        ptr
+        minImageCount
+
+      Vulkan.writeField
+        @"imageFormat"
+        ptr
+        format
+
+      Vulkan.writeField
+        @"imageColorSpace"
+        ptr
+        colorSpace
+
+      Vulkan.writeField
+        @"imageExtent"
+        ptr
+        currentExtent
+
+      Vulkan.writeField
+        @"imageArrayLayers"
+        ptr
+        1
+
+      Vulkan.writeField
+        @"imageUsage"
+        ptr
+        Vulkan.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+
+      Vulkan.writeField
+        @"imageSharingMode"
+        ptr
+        Vulkan.VK_SHARING_MODE_EXCLUSIVE
+
+      Vulkan.writeField
+        @"queueFamilyIndexCount"
+        ptr
+        0
+
+      Vulkan.writeField
+        @"pQueueFamilyIndices"
+        ptr
+        Vulkan.vkNullPtr
+
+      Vulkan.writeField
+        @"preTransform"
+        ptr
+        currentTransform
+
+      Vulkan.writeField
+        @"compositeAlpha"
+        ptr
+        Vulkan.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+
+      Vulkan.writeField
+        @"presentMode"
+        ptr
+        Vulkan.VK_PRESENT_MODE_FIFO_KHR
+
+      Vulkan.writeField
+        @"clipped"
+        ptr
+        Vulkan.VK_TRUE
+
+      Vulkan.writeField
+        @"oldSwapchain"
+        ptr
+        Vulkan.VK_NULL_HANDLE
+
+  Foreign.Marshal.alloca $ \swapchainPtr -> do
+    Vulkan.vkCreateSwapchainKHR
+      device
+      ( Vulkan.unsafePtr swapchainCreateInfo )
+      Foreign.nullPtr
+      swapchainPtr
+      >>= throwVkResult
+
+    Foreign.peek swapchainPtr
+
+
+getSwapchainImages
+  :: Vulkan.VkDevice
+  -> Vulkan.VkSwapchainKHR
+  -> IO [ Vulkan.VkImage ]
+getSwapchainImages device swapchain =
+  Foreign.Marshal.alloca $ \imageCountPtr -> do
+    Vulkan.vkGetSwapchainImagesKHR
+      device
+      swapchain
+      imageCountPtr
+      Foreign.nullPtr
+      >>= throwVkResult
+
+    imageCount <-
+      fromIntegral <$> Foreign.peek imageCountPtr
+
+    Foreign.Marshal.allocaArray imageCount $ \imagesPtr -> do
+      Vulkan.vkGetSwapchainImagesKHR
+        device
+        swapchain
+        imageCountPtr
+        imagesPtr
+        >>= throwVkResult
+
+      Foreign.peekArray imageCount imagesPtr
