@@ -19,7 +19,9 @@ executable zero-to-quake3
   main-is:             Quake3.hs
   -- other-modules:
   -- other-extensions:
-  build-depends:       base >=4.10 && <4.11, sdl2 >=2.4 && <2.5
+  build-depends:       base >=4.10 && <4.11
+                     , sdl2 >=2.4 && <2.5
+                     , vulkan-api
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options: -Wall
