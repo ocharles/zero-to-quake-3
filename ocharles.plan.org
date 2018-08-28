@@ -1,0 +1,14 @@
+#+TITLE: Zero to Quake 3
+
+Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
+
+* Todo
+** [ ] A DSL for building Vulkan structs :refactoring:
+** [ ] Resource cleanup :correctness:
+** [ ] Build a render pass :progress:
+** [ ] Add the validation layer :correctness:
+** [ ] Find out how to correctly use vulkan-loader
+
+It currently requires me to change =LD_LIBRARY_PATH= to contain
+vulkan-loader.so.
+
