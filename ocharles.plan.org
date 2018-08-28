@@ -2,10 +2,15 @@
 
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
+* Today
+** [X] Build a render pass :progress:
+
+
 * Todo
+** [ ] Finish recording a render pass to the command buffer
+** [ ] Submit the command buffer for rendering
 ** [ ] A DSL for building Vulkan structs :refactoring:
 ** [ ] Resource cleanup :correctness:
-** [ ] Build a render pass :progress:
 ** [ ] Add the validation layer :correctness:
 ** [ ] Find out how to correctly use vulkan-loader
 
