@@ -3,15 +3,19 @@
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 * Today
+** [X] Finish recording a render pass to the command buffer
+** [X] Add the validation layer :correctness:
+** [X] Submit the command buffer for rendering
+** [ ] We have a blue screen!
+
+
+* Tuesday
 ** [X] Build a render pass :progress:
 
 
 * Todo
-** [ ] Finish recording a render pass to the command buffer
-** [ ] Submit the command buffer for rendering
 ** [ ] A DSL for building Vulkan structs :refactoring:
 ** [ ] Resource cleanup :correctness:
-** [ ] Add the validation layer :correctness:
 ** [ ] Find out how to correctly use vulkan-loader
 
 It currently requires me to change =LD_LIBRARY_PATH= to contain

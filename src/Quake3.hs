@@ -7,7 +7,7 @@
 module Main ( main ) where
 
 -- base
-import Control.Monad ( forever )
+import Control.Monad ( (>=>), forever, unless )
 import Data.Bits
 import Data.Ord ( Down(..) )
 import Data.List
@@ -68,6 +68,8 @@ main = do
            window
            ( Foreign.castPtr vulkanInstance )
 
+  assertSurfacePresentable physicalDevice queueFamilyIndex surface
+
   ( format, colorSpace ) <-
     putStrLn "Finding correct swapchain format & color space"
       *> determineSwapchainFormat physicalDevice surface
@@ -97,26 +99,41 @@ main = do
     putStrLn "Creating command pool"
       *> createCommandPool device queueFamilyIndex
 
-  commandBuffer <-
-    putStrLn "Creating command buffer"
-      *> allocateCommandBuffer device commandPool
-
   queue <-
     getQueue device 0
 
+  nextImageSem <-
+    createSemaphore device
+
+  submitted <-
+    createSemaphore device
+
+  commandBuffers <-
+    for framebuffers $ \framebuffer -> do
+      commandBuffer <-
+        allocateCommandBuffer device commandPool
+
+      beginCommandBuffer commandBuffer
+
+      recordRenderPass commandBuffer renderPass framebuffer extent
+
+      finishRenderPass commandBuffer
+
+      endCommandBuffer commandBuffer
+
+      return commandBuffer
+
   forever $ do
     nextImageIndex <-
-      acquireNextImage device swapchain
-
-    print nextImageIndex
+      acquireNextImage device swapchain nextImageSem
 
     let
-      framebuffer =
-        framebuffers !! nextImageIndex
+      commandBuffer =
+        commandBuffers !! nextImageIndex
 
-    -- recordRenderPass commandBuffer renderPass framebuffer extent
-    --
-    present queue swapchain nextImageIndex
+    submitCommandBuffer queue commandBuffer nextImageSem submitted
+
+    present queue swapchain nextImageIndex submitted
 
     Vulkan.vkQueueWaitIdle queue
       >>= throwVkResult
@@ -181,12 +198,11 @@ createVulkanInstance neededExtensions = do
         Vulkan.writeField
           @"enabledLayerCount"
           iCreateInfoPtr
-          0
+          1
 
-        Vulkan.writeField
-          @"ppEnabledLayerNames"
-          iCreateInfoPtr
-          Vulkan.VK_NULL_HANDLE
+        Foreign.C.withCString "VK_LAYER_LUNARG_standard_validation" $ \str ->
+          Foreign.Marshal.withArray [ str ] $
+          Vulkan.writeField @"ppEnabledLayerNames" iCreateInfoPtr
 
         Vulkan.writeField
           @"enabledExtensionCount"
@@ -652,12 +668,12 @@ createRenderPass dev format = do
       Vulkan.writeField
         @"initialLayout"
         ptr
-        Vulkan.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        Vulkan.VK_IMAGE_LAYOUT_UNDEFINED
 
       Vulkan.writeField
         @"finalLayout"
         ptr
-        Vulkan.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        Vulkan.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
 
   colorAttachmentReference <-
     Vulkan.newVkData $ \ptr -> do
@@ -997,14 +1013,18 @@ recordRenderPass commandBuffer renderPass framebuffer extent = do
     ( Vulkan.unsafePtr beginInfo )
     Vulkan.VK_SUBPASS_CONTENTS_INLINE
 
-acquireNextImage :: Vulkan.VkDevice -> Vulkan.VkSwapchainKHR -> IO Int
-acquireNextImage device swapchain =
+acquireNextImage
+  :: Vulkan.VkDevice
+  -> Vulkan.VkSwapchainKHR
+  -> Vulkan.VkSemaphore
+  -> IO Int
+acquireNextImage device swapchain signal =
   Foreign.Marshal.alloca $ \ptr -> do
     Vulkan.vkAcquireNextImageKHR
       device
       swapchain
-      0
-      Vulkan.VK_NULL_HANDLE
+      maxBound
+      signal
       Vulkan.VK_NULL_HANDLE
       ptr
       >>= throwVkResult
@@ -1012,17 +1032,23 @@ acquireNextImage device swapchain =
     fromIntegral <$> Foreign.peek ptr
 
 
-present :: Vulkan.VkQueue -> Vulkan.VkSwapchainKHR -> Int -> IO ()
-present queue swapchain imageIndex = do
+present
+  :: Vulkan.VkQueue
+  -> Vulkan.VkSwapchainKHR
+  -> Int
+  -> Vulkan.VkSemaphore
+  -> IO ()
+present queue swapchain imageIndex wait = do
   presentInfo <-
     Vulkan.newVkData $ \ptr -> do
       Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR
 
       Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
 
-      Vulkan.writeField @"waitSemaphoreCount" ptr 0
+      Vulkan.writeField @"waitSemaphoreCount" ptr 1
 
-      Vulkan.writeField @"pWaitSemaphores" ptr Vulkan.vkNullPtr
+      Foreign.Marshal.withArray [ wait ] $
+        Vulkan.writeField @"pWaitSemaphores" ptr
 
       Vulkan.writeField @"swapchainCount" ptr 1
 
@@ -1048,3 +1074,117 @@ getQueue device queueFamilyIndex =
       queuePtr
 
     Foreign.peek queuePtr
+
+
+createSemaphore :: Vulkan.VkDevice -> IO Vulkan.VkSemaphore
+createSemaphore device = do
+  createInfo <-
+    Vulkan.newVkData $ \ptr -> do
+      Vulkan.writeField
+        @"sType"
+        ptr
+        Vulkan.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+
+      Vulkan.writeField @"pNext" ptr Vulkan.VK_NULL_HANDLE
+
+      Vulkan.writeField @"flags" ptr 0
+
+  Foreign.Marshal.alloca $ \semaphorePtr -> do
+    Vulkan.vkCreateSemaphore
+      device
+      ( Vulkan.unsafePtr createInfo )
+      Vulkan.vkNullPtr
+      semaphorePtr
+      >>= throwVkResult
+
+    Foreign.peek semaphorePtr
+
+
+assertSurfacePresentable
+  :: Vulkan.VkPhysicalDevice
+  -> Int
+  -> SDL.Video.Vulkan.VkSurfaceKHR
+  -> IO ()
+assertSurfacePresentable physicalDevice queueFamilyIndex surface = do
+  bool <-
+    Foreign.Marshal.alloca $ \presentablePtr -> do
+      Vulkan.vkGetPhysicalDeviceSurfaceSupportKHR
+        physicalDevice
+        ( fromIntegral queueFamilyIndex )
+        ( Vulkan.VkPtr surface )
+        presentablePtr
+        >>= throwVkResult
+
+      Foreign.peek presentablePtr
+
+  unless
+    ( bool == Vulkan.VK_TRUE )
+    ( fail "Unsupported surface" )
+
+
+finishRenderPass :: Vulkan.VkCommandBuffer -> IO ()
+finishRenderPass =
+  Vulkan.vkCmdEndRenderPass
+
+
+submitCommandBuffer
+  :: Vulkan.VkQueue
+  -> Vulkan.VkCommandBuffer
+  -> Vulkan.VkSemaphore
+  -> Vulkan.VkSemaphore
+  -> IO ()
+submitCommandBuffer queue commandBuffer wait signal = do
+  submitInfo <-
+    Vulkan.newVkData $ \ptr -> do
+      Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_SUBMIT_INFO
+
+      Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
+
+      Vulkan.writeField @"waitSemaphoreCount" ptr 1
+
+      Foreign.Marshal.withArray [ wait ] $
+        Vulkan.writeField @"pWaitSemaphores" ptr
+
+      Foreign.Marshal.withArray [ Vulkan.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ] $
+        Vulkan.writeField @"pWaitDstStageMask" ptr
+
+      Vulkan.writeField @"commandBufferCount" ptr 1
+
+      Foreign.Marshal.withArray [ commandBuffer ] $
+        Vulkan.writeField @"pCommandBuffers" ptr
+
+      Vulkan.writeField @"signalSemaphoreCount" ptr 1
+
+      Foreign.Marshal.withArray [ signal ] $
+        Vulkan.writeField @"pSignalSemaphores" ptr
+
+  Foreign.Marshal.withArray [ submitInfo ] $ \submits ->
+    Vulkan.vkQueueSubmit
+      queue
+      1
+      submits
+      Vulkan.vkNullPtr
+      >>= throwVkResult
+
+
+beginCommandBuffer :: Vulkan.VkCommandBuffer -> IO ()
+beginCommandBuffer commandBuffer = do
+  commandBufferBeginInfo <-
+    Vulkan.newVkData $ \ptr -> do
+      Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+
+      Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
+
+      Vulkan.writeField @"flags" ptr 0
+
+      Vulkan.writeField @"pInheritanceInfo" ptr Vulkan.vkNullPtr
+
+  Vulkan.vkBeginCommandBuffer
+    commandBuffer
+    ( Vulkan.unsafePtr commandBufferBeginInfo )
+    >>= throwVkResult
+
+
+endCommandBuffer :: Vulkan.VkCommandBuffer -> IO ()
+endCommandBuffer =
+  Vulkan.vkEndCommandBuffer >=> throwVkResult
