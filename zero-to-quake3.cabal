@@ -23,6 +23,7 @@ executable zero-to-quake3
                      , sdl2 >=2.4 && <2.5
                      , vulkan-api
                      , managed
+                     , bytestring
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options: -Wall

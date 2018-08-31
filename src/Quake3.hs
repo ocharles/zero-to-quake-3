@@ -19,6 +19,9 @@ import qualified Foreign
 import qualified Foreign.C
 import qualified Foreign.Marshal
 
+-- bytestring
+import qualified Data.ByteString
+
 -- managed
 import Control.Monad.Managed ( MonadManaged, runManaged )
 import qualified Control.Monad.Managed
@@ -114,6 +117,9 @@ main = runManaged $ do
   submitted <-
     createSemaphore device
 
+  graphicsPipeline <-
+    createGraphicsPipeline device renderPass extent
+
   commandBuffers <-
     for framebuffers $ \framebuffer -> do
       commandBuffer <-
@@ -122,6 +128,14 @@ main = runManaged $ do
       beginCommandBuffer commandBuffer
 
       recordRenderPass commandBuffer renderPass framebuffer extent
+
+      liftIO $ do
+        Vulkan.vkCmdBindPipeline
+          commandBuffer
+          Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
+          graphicsPipeline
+
+        Vulkan.vkCmdDraw commandBuffer 3 1 0 0
 
       finishRenderPass commandBuffer
 
@@ -464,14 +478,24 @@ createRenderPass dev format = do
       Vulkan.createVk
         (  Vulkan.set @"flags" 0
         &* Vulkan.set @"pipelineBindPoint" Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
-        &* Vulkan.set @"inputAttachmentCount" 0
-        &* Vulkan.set @"pInputAttachments" Vulkan.vkNullPtr
         &* Vulkan.set @"colorAttachmentCount" 1
         &* Vulkan.setListRef @"pColorAttachments" [ colorAttachmentReference ]
+        &* Vulkan.set @"inputAttachmentCount" 0
+        &* Vulkan.set @"pInputAttachments" Vulkan.vkNullPtr
         &* Vulkan.set @"pResolveAttachments" Vulkan.vkNullPtr
         &* Vulkan.set @"pDepthStencilAttachment" Vulkan.vkNullPtr
         &* Vulkan.set @"preserveAttachmentCount" 0
         &* Vulkan.set @"pPreserveAttachments" Vulkan.vkNullPtr
+        )
+
+    dependency1 =
+      Vulkan.createVk
+        (  Vulkan.set @"srcSubpass" Vulkan.VK_SUBPASS_EXTERNAL
+        &* Vulkan.set @"dstSubpass" 0
+        &* Vulkan.set @"srcStageMask" Vulkan.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        &* Vulkan.set @"srcAccessMask" 0
+        &* Vulkan.set @"dstStageMask" Vulkan.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        &* Vulkan.set @"dstAccessMask" ( Vulkan.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT .|. Vulkan.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT )
         )
 
     createInfo =
@@ -483,8 +507,8 @@ createRenderPass dev format = do
         &* Vulkan.setListRef @"pAttachments" [ attachmentDescription ]
         &* Vulkan.set @"subpassCount" 1
         &* Vulkan.setListRef @"pSubpasses" [ subpass ]
-        &* Vulkan.set @"dependencyCount" 0
-        &* Vulkan.set @"pDependencies" Vulkan.vkNullPtr
+        &* Vulkan.set @"dependencyCount" 1
+        &* Vulkan.setListRef @"pDependencies" [ dependency1 ]
         )
 
   managedVulkanResource
@@ -878,3 +902,214 @@ managedVulkanResource create destroy =
         ( create Vulkan.vkNullPtr >=> throwVkResult )
     )
     ( \a -> destroy a Vulkan.vkNullPtr )
+
+
+createGraphicsPipeline
+  :: MonadManaged m
+  => Vulkan.VkDevice
+  -> Vulkan.VkRenderPass
+  -> Vulkan.VkExtent2D
+  -> m Vulkan.VkPipeline
+createGraphicsPipeline device renderPass extent = do
+  pipelineLayout <-
+    let
+      pipelineLayoutCreateInfo =
+        Vulkan.createVk
+          (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+          &* Vulkan.set @"pNext" Vulkan.VK_NULL
+          &* Vulkan.set @"flags" 0
+          &* Vulkan.set @"pSetLayouts" Vulkan.VK_NULL
+          &* Vulkan.set @"pPushConstantRanges" Vulkan.VK_NULL
+          )
+
+    in
+    managedVulkanResource
+      ( Vulkan.vkCreatePipelineLayout
+          device
+          ( Vulkan.unsafePtr pipelineLayoutCreateInfo )
+      )
+      ( Vulkan.vkDestroyPipelineLayout device )
+
+  vertexShader <-
+    loadShader device "/home/ollie/work/zero-to-quake3/vert.spv"
+
+  fragmentShader <-
+    loadShader device "/home/ollie/work/zero-to-quake3/frag.spv"
+
+  let
+    rasterizationCreateInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"depthClampEnable" Vulkan.VK_FALSE
+        &* Vulkan.set @"rasterizerDiscardEnable" Vulkan.VK_FALSE
+        &* Vulkan.set @"polygonMode" Vulkan.VK_POLYGON_MODE_FILL
+        &* Vulkan.set @"lineWidth" 1
+        &* Vulkan.set @"depthBiasEnable" Vulkan.VK_FALSE
+        &* Vulkan.set @"depthBiasSlopeFactor" 0
+        &* Vulkan.set @"depthBiasClamp" 0
+        &* Vulkan.set @"depthBiasConstantFactor" 0
+        &* Vulkan.set @"frontFace" Vulkan.VK_FRONT_FACE_CLOCKWISE
+        )
+
+    vertexShaderStage =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.setStrRef @"pName" "main"
+        &* Vulkan.set @"module" vertexShader
+        &* Vulkan.set @"stage" Vulkan.VK_SHADER_STAGE_VERTEX_BIT
+        )
+
+    fragmentShaderStage =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.setStrRef @"pName" "main"
+        &* Vulkan.set @"module" fragmentShader
+        &* Vulkan.set @"stage" Vulkan.VK_SHADER_STAGE_FRAGMENT_BIT
+        )
+
+    vertexInputState =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+        &* Vulkan.set @"pVertexAttributeDescriptions" Vulkan.VK_NULL
+        &* Vulkan.set @"pVertexBindingDescriptions" Vulkan.VK_NULL
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        )
+
+    assemblyStateCreateInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"topology" Vulkan.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+        &* Vulkan.set @"primitiveRestartEnable" Vulkan.VK_FALSE
+        )
+
+    viewport =
+      Vulkan.createVk
+        (  Vulkan.set @"x" 0
+        &* Vulkan.set @"y" 0
+        &* Vulkan.set @"width" ( fromIntegral ( Vulkan.getField @"width" extent ) )
+        &* Vulkan.set @"height" ( fromIntegral ( Vulkan.getField @"height" extent ) )
+        &* Vulkan.set @"minDepth" 0
+        &* Vulkan.set @"maxDepth" 1
+        )
+
+    scissor =
+      let
+        offset =
+          Vulkan.createVk
+            (  Vulkan.set @"x" 0
+            &* Vulkan.set @"y" 0
+            )
+
+      in
+      Vulkan.createVk
+        (  Vulkan.set @"offset" offset
+        &* Vulkan.set @"extent" extent
+        )
+
+    viewportState =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"viewportCount" 1
+        &* Vulkan.set @"scissorCount" 1
+        &* Vulkan.setListRef @"pViewports" [ viewport ]
+        &* Vulkan.setListRef @"pScissors" [ scissor ]
+        )
+
+    multisampleState =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
+        &* Vulkan.set @"minSampleShading" 1
+        &* Vulkan.set @"rasterizationSamples" Vulkan.VK_SAMPLE_COUNT_1_BIT
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        )
+
+    attachmentState =
+      Vulkan.createVk
+        ( Vulkan.set @"blendEnable" Vulkan.VK_FALSE
+        &* Vulkan.set @"alphaBlendOp" Vulkan.VK_BLEND_OP_ADD
+        &* Vulkan.set @"srcColorBlendFactor" Vulkan.VK_BLEND_FACTOR_ONE
+        &* Vulkan.set @"dstColorBlendFactor" Vulkan.VK_BLEND_FACTOR_ZERO
+        &* Vulkan.set @"colorBlendOp" Vulkan.VK_BLEND_OP_ADD
+        &* Vulkan.set @"srcAlphaBlendFactor" Vulkan.VK_BLEND_FACTOR_ONE
+        &* Vulkan.set @"dstAlphaBlendFactor" Vulkan.VK_BLEND_FACTOR_ZERO
+        &* Vulkan.set
+             @"colorWriteMask"
+             ( Vulkan.VK_COLOR_COMPONENT_R_BIT
+                 .|. Vulkan.VK_COLOR_COMPONENT_G_BIT
+                 .|. Vulkan.VK_COLOR_COMPONENT_B_BIT
+                 .|. Vulkan.VK_COLOR_COMPONENT_A_BIT
+             )
+        )
+
+    colorBlendState =
+      Vulkan.createVk
+        ( Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
+        &* Vulkan.setAt @"blendConstants" @0 0
+        &* Vulkan.setAt @"blendConstants" @1 0
+        &* Vulkan.setAt @"blendConstants" @2 0
+        &* Vulkan.setAt @"blendConstants" @3 0
+        &* Vulkan.set @"attachmentCount" 1
+        &* Vulkan.setListRef @"pAttachments" [ attachmentState ]
+        &* Vulkan.set @"logicOp" Vulkan.VK_LOGIC_OP_COPY
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        )
+
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"stageCount" 2
+        &* Vulkan.setListRef @"pStages" [ vertexShaderStage, fragmentShaderStage ]
+        &* Vulkan.setVkRef @"pVertexInputState" vertexInputState
+        &* Vulkan.set @"basePipelineIndex" 0
+        &* Vulkan.set @"subpass" 0
+        &* Vulkan.set @"renderPass" renderPass
+        &* Vulkan.set @"layout" pipelineLayout
+        &* Vulkan.setVkRef @"pRasterizationState" rasterizationCreateInfo
+        &* Vulkan.setVkRef @"pInputAssemblyState" assemblyStateCreateInfo
+        &* Vulkan.setVkRef @"pViewportState" viewportState
+        &* Vulkan.setVkRef @"pMultisampleState" multisampleState
+        &* Vulkan.setVkRef @"pColorBlendState" colorBlendState
+        )
+
+  managedVulkanResource
+    ( Vulkan.vkCreateGraphicsPipelines
+        device
+        Vulkan.vkNullPtr
+        1
+        ( Vulkan.unsafePtr createInfo )
+    )
+    ( Vulkan.vkDestroyPipeline device )
+
+
+loadShader :: MonadManaged m => Vulkan.VkDevice -> FilePath -> m Vulkan.VkShaderModule
+loadShader device srcFile = do
+  bytes <-
+    liftIO ( Data.ByteString.readFile srcFile )
+
+  managedVulkanResource
+    ( \a b ->
+        Data.ByteString.useAsCStringLen bytes $ \( bytesPtr, len ) ->
+          let
+            createInfo =
+              Vulkan.createVk
+                (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO
+                &* Vulkan.set @"pNext" Vulkan.VK_NULL
+                &* Vulkan.set @"flags" 0
+                &* Vulkan.set @"pCode" ( Foreign.castPtr bytesPtr )
+                &* Vulkan.set @"codeSize" ( fromIntegral len )
+                )
+
+          in
+          Vulkan.vkCreateShaderModule device ( Vulkan.unsafePtr createInfo ) a b
+    )
+    ( Vulkan.vkDestroyShaderModule device )

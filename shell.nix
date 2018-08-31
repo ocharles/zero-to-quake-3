@@ -27,5 +27,5 @@ let
 
 in
 pkgs.mkShell {
-  buildInputs = with pkgs; [ ghc vulkan-loader ];
+  buildInputs = with pkgs; [ glslang ghc vulkan-loader ];
 }
