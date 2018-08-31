@@ -22,6 +22,7 @@ executable zero-to-quake3
   build-depends:       base >=4.10 && <4.11
                      , sdl2 >=2.4 && <2.5
                      , vulkan-api
+                     , managed
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options: -Wall

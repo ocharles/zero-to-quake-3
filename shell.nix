@@ -19,10 +19,10 @@ let
     };
 
   ghc =
-    haskellPackages.ghcWithPackages
+    haskellPackages.ghcWithHoogle
       ( hs:
         with hs;
-        [ sdl2 vulkan-api ]
+        [ managed sdl2 vulkan-api ]
       );
 
 in

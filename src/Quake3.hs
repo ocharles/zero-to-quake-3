@@ -1,13 +1,16 @@
 {-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 {-# language OverloadedStrings #-}
+{-# language RankNTypes #-}
 {-# language TypeApplications #-}
 {-# language TypeFamilies #-}
 
 module Main ( main ) where
 
 -- base
+import Control.Exception ( bracket )
 import Control.Monad ( (>=>), forever, guard, unless )
+import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Bits
 import Data.Ord ( Down(..) )
 import Data.List
@@ -15,6 +18,10 @@ import Data.Traversable ( for )
 import qualified Foreign
 import qualified Foreign.C
 import qualified Foreign.Marshal
+
+-- managed
+import Control.Monad.Managed ( MonadManaged, runManaged )
+import qualified Control.Monad.Managed
 
 -- sdl2
 import qualified SDL
@@ -31,38 +38,38 @@ import qualified Graphics.Vulkan.Marshal.Create as Vulkan
 
 
 main :: IO ()
-main = do
+main = runManaged $ do
   enableSDLLogging
   initializeSDL
 
   window <-
-    putStrLn "Creating SDL window"
+    logMsg "Creating SDL window"
       *> createWindow
 
   neededExtensions <-
-    putStrLn "Loading needed extensions"
+    logMsg "Loading needed extensions"
       *> getNeededExtensions window
 
-  putStrLn ( "Needed instance extensions are: " ++ show neededExtensions )
+  logMsg ( "Needed instance extensions are: " ++ show neededExtensions )
 
   vulkanInstance <-
-    putStrLn "Creating Vulkan instance"
+    logMsg "Creating Vulkan instance"
       *> createVulkanInstance neededExtensions
 
   physicalDevice <-
-    putStrLn "Creating physical device"
+    logMsg "Creating physical device"
       *> createPhysicalDevice vulkanInstance
 
   queueFamilyIndex <-
-    putStrLn "Finding suitable queue family"
+    logMsg "Finding suitable queue family"
       *> findQueueFamilyIndex physicalDevice
 
   device <-
-    putStrLn "Creating logical device"
+    logMsg "Creating logical device"
       *> createLogicalDevice physicalDevice queueFamilyIndex
 
   surface <-
-    putStrLn "Creating SDL surface"
+    logMsg "Creating SDL surface"
       *> SDL.Video.Vulkan.vkCreateSurface
            window
            ( Foreign.castPtr vulkanInstance )
@@ -70,23 +77,23 @@ main = do
   assertSurfacePresentable physicalDevice queueFamilyIndex surface
 
   ( format, colorSpace ) <-
-    putStrLn "Finding correct swapchain format & color space"
+    logMsg "Finding correct swapchain format & color space"
       *> determineSwapchainFormat physicalDevice surface
 
   ( swapchain, extent ) <-
-    putStrLn "Creating swapchain"
+    logMsg "Creating swapchain"
       *> createSwapchain physicalDevice device surface format colorSpace
 
   images <-
-    putStrLn "Getting swapchain images"
+    logMsg "Getting swapchain images"
       *> getSwapchainImages device swapchain
 
   renderPass <-
-    putStrLn "Creating a render pass"
+    logMsg "Creating a render pass"
       *> createRenderPass device format
 
   framebuffers <- do
-    putStrLn "Creating frame buffers"
+    logMsg "Creating frame buffers"
 
     for images $ \image -> do
       imageView <-
@@ -95,7 +102,7 @@ main = do
       createFramebuffer device renderPass imageView extent
 
   commandPool <-
-    putStrLn "Creating command pool"
+    logMsg "Creating command pool"
       *> createCommandPool device queueFamilyIndex
 
   queue <-
@@ -134,41 +141,43 @@ main = do
 
     present queue swapchain nextImageIndex submitted
 
-    Vulkan.vkQueueWaitIdle queue
+    liftIO ( Vulkan.vkQueueWaitIdle queue )
       >>= throwVkResult
 
   where
 
     getNeededExtensions w =
       SDL.Video.Vulkan.vkGetInstanceExtensions w
-        >>= traverse Foreign.C.peekCString
+        >>= traverse ( liftIO . Foreign.C.peekCString )
 
 
-enableSDLLogging :: IO ()
+enableSDLLogging :: MonadIO m => m ()
 enableSDLLogging =
   SDL.Raw.logSetAllPriority SDL.Raw.SDL_LOG_PRIORITY_VERBOSE
 
 
-initializeSDL :: IO ()
+initializeSDL :: MonadIO m => m ()
 initializeSDL =
   SDL.initialize [ SDL.InitVideo ]
 
 
-createWindow :: IO SDL.Window
+createWindow :: MonadManaged m => m SDL.Window
 createWindow =
-  SDL.createWindow
-    "Vulkan Quake 3"
-    SDL.defaultWindow
-      { SDL.windowVulkan = True
-      }
+  manageBracket
+    ( SDL.createWindow
+        "Vulkan Quake 3"
+        SDL.defaultWindow
+          { SDL.windowVulkan = True
+          }
+    )
+    SDL.destroyWindow
 
-createVulkanInstance :: [ String ] -> IO Vulkan.VkInstance
+
+createVulkanInstance :: MonadManaged m => [ String ] -> m Vulkan.VkInstance
 createVulkanInstance neededExtensions =
-  allocaAndPeek $
-    Vulkan.vkCreateInstance
-      ( Vulkan.unsafePtr createInfo )
-      Vulkan.VK_NULL_HANDLE
-      >=> throwVkResult
+  managedVulkanResource
+    ( Vulkan.vkCreateInstance ( Vulkan.unsafePtr createInfo ) )
+    Vulkan.vkDestroyInstance
 
   where
 
@@ -192,21 +201,21 @@ createVulkanInstance neededExtensions =
         )
 
 
-throwVkResult :: Vulkan.VkResult -> IO ()
+throwVkResult :: MonadIO m => Vulkan.VkResult -> m ()
 throwVkResult Vulkan.VK_SUCCESS =
   return ()
 throwVkResult res =
   fail ( show res )
 
 
-createPhysicalDevice :: Vulkan.VkInstance -> IO Vulkan.VkPhysicalDevice
-createPhysicalDevice vk = do
+createPhysicalDevice :: MonadIO m => Vulkan.VkInstance -> m Vulkan.VkPhysicalDevice
+createPhysicalDevice vk = liftIO $ do
   physicalDevices <-
     fetchAll
-    ( \nPtr ptr ->
-        Vulkan.vkEnumeratePhysicalDevices vk nPtr ptr
-          >>= throwVkResult
-    )
+      ( \nPtr ptr ->
+          Vulkan.vkEnumeratePhysicalDevices vk nPtr ptr
+            >>= throwVkResult
+      )
 
   typedDevices <-
     for physicalDevices $ \physicalDevice -> do
@@ -216,7 +225,7 @@ createPhysicalDevice vk = do
 
       return ( physicalDevice, Vulkan.getField @"deviceType" properties )
 
-  case filter isSuitabelDevice typedDevices of
+  case filter isSuitableDevice typedDevices of
     [] ->
       fail "Could not find a suitable physical device"
 
@@ -225,7 +234,7 @@ createPhysicalDevice vk = do
 
   where
 
-    isSuitabelDevice ( _, deviceType ) =
+    isSuitableDevice ( _, deviceType ) =
       deviceType
         `elem`
           [ Vulkan.VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
@@ -233,8 +242,8 @@ createPhysicalDevice vk = do
           ]
 
 
-findQueueFamilyIndex :: Vulkan.VkPhysicalDevice -> IO Int
-findQueueFamilyIndex physicalDevice = do
+findQueueFamilyIndex :: MonadIO m => Vulkan.VkPhysicalDevice -> m Int
+findQueueFamilyIndex physicalDevice = liftIO $ do
   queueFamilies <-
     fetchAll
       ( \nQueueFamiliesPtr queueFamiliesPtr ->
@@ -265,9 +274,10 @@ findQueueFamilyIndex physicalDevice = do
 
 
 createLogicalDevice
-  :: Vulkan.VkPhysicalDevice
+  :: MonadManaged m
+  => Vulkan.VkPhysicalDevice
   -> Int
-  -> IO Vulkan.VkDevice
+  -> m Vulkan.VkDevice
 createLogicalDevice physicalDevice queueFamilyIndex = do
   let
     queueCreateInfo =
@@ -297,20 +307,17 @@ createLogicalDevice physicalDevice queueFamilyIndex = do
         &* Vulkan.set @"pEnabledFeatures" Foreign.nullPtr
         )
 
-  allocaAndPeek
-    ( Vulkan.vkCreateDevice
-        physicalDevice
-        ( Vulkan.unsafePtr createInfo )
-        Foreign.nullPtr
-        >=> throwVkResult
-    )
+  managedVulkanResource
+    ( Vulkan.vkCreateDevice physicalDevice ( Vulkan.unsafePtr createInfo ) )
+    Vulkan.vkDestroyDevice
 
 
 determineSwapchainFormat
-  :: Vulkan.VkPhysicalDevice
+  :: MonadIO m
+  => Vulkan.VkPhysicalDevice
   -> SDL.Video.Vulkan.VkSurfaceKHR
-  -> IO ( Vulkan.VkFormat, Vulkan.VkColorSpaceKHR )
-determineSwapchainFormat physicalDevice surface = do
+  -> m ( Vulkan.VkFormat, Vulkan.VkColorSpaceKHR )
+determineSwapchainFormat physicalDevice surface = liftIO $ do
   surfaceFormats <-
     fetchAll
       ( \surfaceFormatCountPtr surfaceFormatsPtr ->
@@ -352,14 +359,15 @@ determineSwapchainFormat physicalDevice surface = do
 
 
 createSwapchain
-  :: Vulkan.VkPhysicalDevice
+  :: ( MonadIO m, MonadManaged m )
+  => Vulkan.VkPhysicalDevice
   -> Vulkan.VkDevice
   -> SDL.Video.Vulkan.VkSurfaceKHR
   -> Vulkan.VkFormat
   -> Vulkan.VkColorSpaceKHR
-  -> IO ( Vulkan.VkSwapchainKHR, Vulkan.VkExtent2D )
+  -> m ( Vulkan.VkSwapchainKHR, Vulkan.VkExtent2D )
 createSwapchain physicalDevice device surface format colorSpace = do
-  surfaceCapabilities <-
+  surfaceCapabilities <- liftIO $
     allocaAndPeek
       ( Vulkan.vkGetPhysicalDeviceSurfaceCapabilitiesKHR
           physicalDevice
@@ -399,22 +407,22 @@ createSwapchain physicalDevice device surface format colorSpace = do
         )
 
   swapchain <-
-    allocaAndPeek
+    managedVulkanResource
       ( Vulkan.vkCreateSwapchainKHR
           device
           ( Vulkan.unsafePtr swapchainCreateInfo )
-          Foreign.nullPtr
-          >=> throwVkResult
       )
+      ( Vulkan.vkDestroySwapchainKHR device )
 
   return ( swapchain, currentExtent )
 
 
 getSwapchainImages
-  :: Vulkan.VkDevice
+  :: MonadIO m
+  => Vulkan.VkDevice
   -> Vulkan.VkSwapchainKHR
-  -> IO [ Vulkan.VkImage ]
-getSwapchainImages device swapchain =
+  -> m [ Vulkan.VkImage ]
+getSwapchainImages device swapchain = liftIO $
   fetchAll
     ( \imageCountPtr imagesPtr ->
         Vulkan.vkGetSwapchainImagesKHR
@@ -426,7 +434,11 @@ getSwapchainImages device swapchain =
     )
 
 
-createRenderPass :: Vulkan.VkDevice -> Vulkan.VkFormat -> IO Vulkan.VkRenderPass
+createRenderPass
+  :: MonadManaged m
+  => Vulkan.VkDevice
+  -> Vulkan.VkFormat
+  -> m Vulkan.VkRenderPass
 createRenderPass dev format = do
   let
     attachmentDescription =
@@ -475,21 +487,21 @@ createRenderPass dev format = do
         &* Vulkan.set @"pDependencies" Vulkan.vkNullPtr
         )
 
-  allocaAndPeek
+  managedVulkanResource
     ( Vulkan.vkCreateRenderPass
         dev
         ( Vulkan.unsafePtr createInfo )
-        Vulkan.vkNullPtr
-        >=> throwVkResult
     )
+    ( Vulkan.vkDestroyRenderPass dev )
 
 
 createFramebuffer
-  :: Vulkan.VkDevice
+  :: MonadManaged m
+  => Vulkan.VkDevice
   -> Vulkan.VkRenderPass
   -> Vulkan.VkImageView
   -> Vulkan.VkExtent2D
-  -> IO Vulkan.VkFramebuffer
+  -> m Vulkan.VkFramebuffer
 createFramebuffer dev renderPass colorImageView extent = do
   let
     createInfo =
@@ -505,20 +517,20 @@ createFramebuffer dev renderPass colorImageView extent = do
         &* Vulkan.set @"layers" 1
         )
 
-  allocaAndPeek
+  managedVulkanResource
     ( Vulkan.vkCreateFramebuffer
         dev
         ( Vulkan.unsafePtr createInfo )
-        Vulkan.vkNullPtr
-        >=> throwVkResult
     )
+    ( Vulkan.vkDestroyFramebuffer dev )
 
 
 createImageView
-  :: Vulkan.VkDevice
+  :: MonadManaged m
+  => Vulkan.VkDevice
   -> Vulkan.VkImage
   -> Vulkan.VkFormat
-  -> IO Vulkan.VkImageView
+  -> m Vulkan.VkImageView
 createImageView dev image format = do
   let
     components =
@@ -550,16 +562,19 @@ createImageView dev image format = do
         &* Vulkan.set @"subresourceRange" subResourceRange
         )
 
-  allocaAndPeek
+  managedVulkanResource
     ( Vulkan.vkCreateImageView
         dev
         ( Vulkan.unsafePtr createInfo )
-        Vulkan.vkNullPtr
-        >=> throwVkResult
     )
+    ( Vulkan.vkDestroyImageView dev )
 
 
-createCommandPool :: Vulkan.VkDevice -> Int -> IO Vulkan.VkCommandPool
+createCommandPool
+  :: MonadManaged m
+  => Vulkan.VkDevice
+  -> Int
+  -> m Vulkan.VkCommandPool
 createCommandPool dev queueFamilyIndex = do
   let
     createInfo =
@@ -570,19 +585,19 @@ createCommandPool dev queueFamilyIndex = do
         &* Vulkan.set @"queueFamilyIndex" ( fromIntegral queueFamilyIndex )
         )
 
-  allocaAndPeek
+  managedVulkanResource
     ( Vulkan.vkCreateCommandPool
         dev
         ( Vulkan.unsafePtr createInfo )
-        Vulkan.vkNullPtr
-        >=> throwVkResult
     )
+    ( Vulkan.vkDestroyCommandPool dev )
 
 
 allocateCommandBuffer
-  :: Vulkan.VkDevice
+  :: MonadManaged m
+  => Vulkan.VkDevice
   -> Vulkan.VkCommandPool
-  -> IO Vulkan.VkCommandBuffer
+  -> m Vulkan.VkCommandBuffer
 allocateCommandBuffer dev commandPool = do
   let
     allocInfo =
@@ -594,19 +609,26 @@ allocateCommandBuffer dev commandPool = do
         &* Vulkan.set @"commandBufferCount" 1
         )
 
-  allocaAndPeek
-    ( Vulkan.vkAllocateCommandBuffers dev ( Vulkan.unsafePtr allocInfo )
-        >=> throwVkResult
+  manageBracket
+    ( allocaAndPeek
+        ( Vulkan.vkAllocateCommandBuffers dev ( Vulkan.unsafePtr allocInfo )
+            >=> throwVkResult
+        )
+    )
+    ( \a ->
+        Foreign.Marshal.withArray [ a ]
+          ( Vulkan.vkFreeCommandBuffers dev commandPool 1 )
     )
 
 
 recordRenderPass
-  :: Vulkan.VkCommandBuffer
+  :: MonadIO m
+  => Vulkan.VkCommandBuffer
   -> Vulkan.VkRenderPass
   -> Vulkan.VkFramebuffer
   -> Vulkan.VkExtent2D
-  -> IO ()
-recordRenderPass commandBuffer renderPass framebuffer extent = do
+  -> m ()
+recordRenderPass commandBuffer renderPass framebuffer extent = liftIO $ do
   let
     blue =
       Vulkan.createVk
@@ -647,12 +669,14 @@ recordRenderPass commandBuffer renderPass framebuffer extent = do
     ( Vulkan.unsafePtr beginInfo )
     Vulkan.VK_SUBPASS_CONTENTS_INLINE
 
+
 acquireNextImage
-  :: Vulkan.VkDevice
+  :: MonadIO m
+  => Vulkan.VkDevice
   -> Vulkan.VkSwapchainKHR
   -> Vulkan.VkSemaphore
-  -> IO Int
-acquireNextImage device swapchain signal =
+  -> m Int
+acquireNextImage device swapchain signal = liftIO $
   fmap
     fromIntegral
     ( allocaAndPeek
@@ -668,12 +692,13 @@ acquireNextImage device swapchain signal =
 
 
 present
-  :: Vulkan.VkQueue
+  :: MonadIO m
+  => Vulkan.VkQueue
   -> Vulkan.VkSwapchainKHR
   -> Int
   -> Vulkan.VkSemaphore
-  -> IO ()
-present queue swapchain imageIndex wait = do
+  -> m ()
+present queue swapchain imageIndex wait = liftIO $ do
   let
     presentInfo =
       Vulkan.createVk
@@ -691,8 +716,8 @@ present queue swapchain imageIndex wait = do
     >>= throwVkResult
 
 
-getQueue :: Vulkan.VkDevice -> Int -> IO Vulkan.VkQueue
-getQueue device queueFamilyIndex =
+getQueue :: MonadIO m => Vulkan.VkDevice -> Int -> m Vulkan.VkQueue
+getQueue device queueFamilyIndex = liftIO $
   allocaAndPeek
     ( Vulkan.vkGetDeviceQueue
         device
@@ -701,7 +726,7 @@ getQueue device queueFamilyIndex =
     )
 
 
-createSemaphore :: Vulkan.VkDevice -> IO Vulkan.VkSemaphore
+createSemaphore :: MonadManaged m => Vulkan.VkDevice -> m Vulkan.VkSemaphore
 createSemaphore device = do
   let
     createInfo =
@@ -711,21 +736,18 @@ createSemaphore device = do
         &* Vulkan.set @"flags" 0
         )
 
-  allocaAndPeek
-    ( Vulkan.vkCreateSemaphore
-        device
-        ( Vulkan.unsafePtr createInfo )
-        Vulkan.vkNullPtr
-        >=> throwVkResult
-    )
+  managedVulkanResource
+    ( Vulkan.vkCreateSemaphore device ( Vulkan.unsafePtr createInfo ) )
+    ( Vulkan.vkDestroySemaphore device )
 
 
 assertSurfacePresentable
-  :: Vulkan.VkPhysicalDevice
+  :: MonadIO m
+  => Vulkan.VkPhysicalDevice
   -> Int
   -> SDL.Video.Vulkan.VkSurfaceKHR
-  -> IO ()
-assertSurfacePresentable physicalDevice queueFamilyIndex surface = do
+  -> m ()
+assertSurfacePresentable physicalDevice queueFamilyIndex surface = liftIO $ do
   bool <-
     allocaAndPeek
       ( Vulkan.vkGetPhysicalDeviceSurfaceSupportKHR
@@ -740,18 +762,19 @@ assertSurfacePresentable physicalDevice queueFamilyIndex surface = do
     ( fail "Unsupported surface" )
 
 
-finishRenderPass :: Vulkan.VkCommandBuffer -> IO ()
+finishRenderPass :: MonadIO m => Vulkan.VkCommandBuffer -> m ()
 finishRenderPass =
-  Vulkan.vkCmdEndRenderPass
+  liftIO . Vulkan.vkCmdEndRenderPass
 
 
 submitCommandBuffer
-  :: Vulkan.VkQueue
+  :: MonadIO m
+  => Vulkan.VkQueue
   -> Vulkan.VkCommandBuffer
   -> Vulkan.VkSemaphore
   -> Vulkan.VkSemaphore
-  -> IO ()
-submitCommandBuffer queue commandBuffer wait signal = do
+  -> m ()
+submitCommandBuffer queue commandBuffer wait signal = liftIO $ do
   let
     submitInfo =
       Vulkan.createVk
@@ -777,8 +800,8 @@ submitCommandBuffer queue commandBuffer wait signal = do
       >>= throwVkResult
 
 
-beginCommandBuffer :: Vulkan.VkCommandBuffer -> IO ()
-beginCommandBuffer commandBuffer = do
+beginCommandBuffer :: MonadIO m => Vulkan.VkCommandBuffer -> m ()
+beginCommandBuffer commandBuffer = liftIO $ do
   let
     commandBufferBeginInfo =
       Vulkan.createVk
@@ -794,9 +817,9 @@ beginCommandBuffer commandBuffer = do
     >>= throwVkResult
 
 
-endCommandBuffer :: Vulkan.VkCommandBuffer -> IO ()
+endCommandBuffer :: MonadIO m => Vulkan.VkCommandBuffer -> m ()
 endCommandBuffer =
-  Vulkan.vkEndCommandBuffer >=> throwVkResult
+  liftIO . Vulkan.vkEndCommandBuffer >=> throwVkResult
 
 
 allocaAndPeek :: Foreign.Storable a => ( Vulkan.Ptr a -> IO () ) -> IO a
@@ -816,6 +839,9 @@ allocaAndPeekArray n f =
     )
 
 
+fetchAll
+  :: ( Foreign.Storable a, Foreign.Storable b, Integral b )
+  => ( Vulkan.Ptr b -> Vulkan.Ptr a -> IO () ) -> IO [a]
 fetchAll f = do
   Foreign.Marshal.alloca $ \nPtr -> do
     f nPtr Vulkan.vkNullPtr
@@ -824,3 +850,31 @@ fetchAll f = do
       fromIntegral <$> Foreign.peek nPtr
 
     allocaAndPeekArray n ( f nPtr )
+
+
+manageBracket :: MonadManaged m => IO a -> (a -> IO b) -> m a
+manageBracket create destroy =
+  managed ( bracket create destroy )
+
+
+logMsg :: MonadIO m => String -> m ()
+logMsg =
+  liftIO . putStrLn
+
+
+managed :: MonadManaged m => (forall r. (a -> IO r) -> IO r) -> m a
+managed f =
+  Control.Monad.Managed.using ( Control.Monad.Managed.managed f )
+
+
+managedVulkanResource
+  :: ( MonadManaged m, Foreign.Storable x, Vulkan.VulkanPtr ptr )
+  => ( ptr a -> Vulkan.Ptr x -> IO Vulkan.VkResult )
+  -> ( x -> ptr a -> IO () )
+  -> m x
+managedVulkanResource create destroy =
+  manageBracket
+    ( allocaAndPeek
+        ( create Vulkan.vkNullPtr >=> throwVkResult )
+    )
+    ( \a -> destroy a Vulkan.vkNullPtr )
