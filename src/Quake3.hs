@@ -7,7 +7,7 @@
 module Main ( main ) where
 
 -- base
-import Control.Monad ( (>=>), forever, unless )
+import Control.Monad ( (>=>), forever, guard, unless )
 import Data.Bits
 import Data.Ord ( Down(..) )
 import Data.List
@@ -22,10 +22,12 @@ import qualified SDL.Raw
 import qualified SDL.Video.Vulkan
 
 -- vulkan-api
+import Graphics.Vulkan.Marshal.Create ( (&*) )
 import qualified Graphics.Vulkan as Vulkan
 import qualified Graphics.Vulkan.Core_1_0 as Vulkan
 import qualified Graphics.Vulkan.Ext.VK_KHR_surface as Vulkan
 import qualified Graphics.Vulkan.Ext.VK_KHR_swapchain as Vulkan
+import qualified Graphics.Vulkan.Marshal.Create as Vulkan
 
 
 main :: IO ()
@@ -41,10 +43,7 @@ main = do
     putStrLn "Loading needed extensions"
       *> getNeededExtensions window
 
-  names <-
-    traverse Foreign.C.peekCString neededExtensions
-
-  putStrLn ( "Needed instance extensions are: " ++ show names )
+  putStrLn ( "Needed instance extensions are: " ++ show neededExtensions )
 
   vulkanInstance <-
     putStrLn "Creating Vulkan instance"
@@ -142,6 +141,7 @@ main = do
 
     getNeededExtensions w =
       SDL.Video.Vulkan.vkGetInstanceExtensions w
+        >>= traverse Foreign.C.peekCString
 
 
 enableSDLLogging :: IO ()
@@ -162,65 +162,34 @@ createWindow =
       { SDL.windowVulkan = True
       }
 
-
-createVulkanInstance :: [ Vulkan.CString ] -> IO Vulkan.VkInstance
-createVulkanInstance neededExtensions = do
-  createInfo <-
-    newVkCreateInfo
-
-  create createInfo
+createVulkanInstance :: [ String ] -> IO Vulkan.VkInstance
+createVulkanInstance neededExtensions =
+  allocaAndPeek $
+    Vulkan.vkCreateInstance
+      ( Vulkan.unsafePtr createInfo )
+      Vulkan.VK_NULL_HANDLE
+      >=> throwVkResult
 
   where
 
-
-    newVkCreateInfo =
-      Vulkan.newVkData $ \iCreateInfoPtr -> do
-        Vulkan.writeField
-          @"sType"
-          iCreateInfoPtr
-          Vulkan.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
-
-        Vulkan.writeField
-          @"pNext"
-          iCreateInfoPtr
-          Vulkan.VK_NULL_HANDLE
-
-        Vulkan.writeField
-          @"flags"
-          iCreateInfoPtr
-          0
-
-        Vulkan.writeField
-          @"pApplicationInfo"
-          iCreateInfoPtr
-          Vulkan.VK_NULL_HANDLE
-
-        Vulkan.writeField
-          @"enabledLayerCount"
-          iCreateInfoPtr
-          1
-
-        Foreign.C.withCString "VK_LAYER_LUNARG_standard_validation" $ \str ->
-          Foreign.Marshal.withArray [ str ] $
-          Vulkan.writeField @"ppEnabledLayerNames" iCreateInfoPtr
-
-        Vulkan.writeField
-          @"enabledExtensionCount"
-          iCreateInfoPtr
-          ( fromIntegral ( length neededExtensions ) )
-
-        Foreign.Marshal.withArray neededExtensions $
-          Vulkan.writeField @"ppEnabledExtensionNames" iCreateInfoPtr
-
-    create createInfo =
-      Foreign.Marshal.alloca $ \ptr -> do
-        Vulkan.vkCreateInstance
-          ( Vulkan.unsafePtr createInfo )
-          Vulkan.VK_NULL_HANDLE
-          ptr
-          >>= throwVkResult
-
-        Foreign.peek ptr
+    createInfo :: Vulkan.VkInstanceCreateInfo
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL_HANDLE
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"pApplicationInfo" Vulkan.VK_NULL_HANDLE
+        &* Vulkan.set @"enabledLayerCount" 1
+        &* Vulkan.setStrListRef
+             @"ppEnabledLayerNames"
+             [ "VK_LAYER_LUNARG_standard_validation" ]
+        &* Vulkan.set
+            @"enabledExtensionCount"
+            ( fromIntegral ( length neededExtensions ) )
+        &* Vulkan.setStrListRef
+             @"ppEnabledExtensionNames"
+             neededExtensions
+        )
 
 
 throwVkResult :: Vulkan.VkResult -> IO ()
@@ -231,42 +200,28 @@ throwVkResult res =
 
 
 createPhysicalDevice :: Vulkan.VkInstance -> IO Vulkan.VkPhysicalDevice
-createPhysicalDevice vk =
-  Foreign.Marshal.alloca $ \nDevicesPtr -> do
-    Vulkan.vkEnumeratePhysicalDevices vk nDevicesPtr Foreign.nullPtr
-      >>= throwVkResult
-
-    nDevices <-
-      fromIntegral <$> Foreign.peek nDevicesPtr
-
-    physicalDevices <-
-      Foreign.Marshal.allocaArray nDevices $ \physicalDevicesPtr -> do
-        Vulkan.vkEnumeratePhysicalDevices vk nDevicesPtr physicalDevicesPtr
+createPhysicalDevice vk = do
+  physicalDevices <-
+    fetchAll
+    ( \nPtr ptr ->
+        Vulkan.vkEnumeratePhysicalDevices vk nPtr ptr
           >>= throwVkResult
+    )
 
-        Foreign.Marshal.peekArray nDevices physicalDevicesPtr
+  typedDevices <-
+    for physicalDevices $ \physicalDevice -> do
+      properties <-
+        allocaAndPeek
+          ( Vulkan.vkGetPhysicalDeviceProperties physicalDevice )
 
-    typedDevices <-
-      for physicalDevices $ \physicalDevice -> do
-        properties <-
-          Foreign.Marshal.alloca $ \propertiesPtr -> do
-            Vulkan.vkGetPhysicalDeviceProperties
-              physicalDevice
-              propertiesPtr
+      return ( physicalDevice, Vulkan.getField @"deviceType" properties )
 
-            Foreign.peek propertiesPtr
+  case filter isSuitabelDevice typedDevices of
+    [] ->
+      fail "Could not find a suitable physical device"
 
-        deviceType <-
-          Vulkan.readField @"deviceType" ( Vulkan.unsafePtr properties )
-
-        return ( physicalDevice, deviceType )
-
-    case filter isSuitabelDevice typedDevices of
-      [] ->
-        fail "Could not find a suitable physical device"
-
-      ( ( d, _deviceType ) : _ds ) ->
-        return d
+    ( ( d, _deviceType ) : _ds ) ->
+      return d
 
   where
 
@@ -279,50 +234,34 @@ createPhysicalDevice vk =
 
 
 findQueueFamilyIndex :: Vulkan.VkPhysicalDevice -> IO Int
-findQueueFamilyIndex physicalDevice =
-  Foreign.Marshal.alloca $ \nQueueFamiliesPtr -> do
-    Vulkan.vkGetPhysicalDeviceQueueFamilyProperties
-      physicalDevice
-      nQueueFamiliesPtr
-      Foreign.nullPtr
+findQueueFamilyIndex physicalDevice = do
+  queueFamilies <-
+    fetchAll
+      ( \nQueueFamiliesPtr queueFamiliesPtr ->
+          Vulkan.vkGetPhysicalDeviceQueueFamilyProperties
+            physicalDevice
+            nQueueFamiliesPtr
+            queueFamiliesPtr
+      )
 
-    nQueueFamilies <-
-      fromIntegral <$> Foreign.peek nQueueFamiliesPtr
+  let
+    capableFamilyIndices = do
+      ( i, queueFamily ) <- zip [0 ..] queueFamilies
 
-    queueFamilies <-
-      Foreign.Marshal.allocaArray nQueueFamilies $ \queueFamiliesPtr -> do
-        Vulkan.vkGetPhysicalDeviceQueueFamilyProperties
-          physicalDevice
-          nQueueFamiliesPtr
-          queueFamiliesPtr
+      let
+        flags =
+          Vulkan.getField @"queueFlags" queueFamily
 
-        Foreign.Marshal.peekArray nQueueFamilies queueFamiliesPtr
+      guard ( flags .&. Vulkan.VK_QUEUE_GRAPHICS_BIT > 0 )
 
-    capabilities <-
-      for ( zip [0 ..] queueFamilies ) $ \( i, queueFamily ) -> do
-        flags <-
-          Vulkan.readField
-            @"queueFlags"
-            ( Vulkan.unsafePtr queueFamily )
+      return i
 
-        let
-          capable =
-            flags .&. Vulkan.VK_QUEUE_GRAPHICS_BIT > 0
+  case capableFamilyIndices of
+    [] ->
+      fail "No queue family has sufficient capabilities"
 
-        return ( i, capable )
-
-    case filter isCapable capabilities of
-      [] ->
-        fail "No queue family has sufficient capabilities"
-
-      ( ( i, _ ) : _ ) ->
-        return i
-
-  where
-
-    -- TODO Check that VK_KHR_swapchain is supported
-    isCapable ( _, capable ) =
-      capable
+    ( i : _ ) ->
+      return i
 
 
 createLogicalDevice
@@ -330,92 +269,41 @@ createLogicalDevice
   -> Int
   -> IO Vulkan.VkDevice
 createLogicalDevice physicalDevice queueFamilyIndex = do
-  Foreign.Marshal.alloca $ \devicePtr -> do
-    queueCreateInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+  let
+    queueCreateInfo =
+      Vulkan.createVk
+        (  Vulkan.set
+             @"sType"
+             Vulkan.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+        &* Vulkan.set @"pNext" Foreign.nullPtr
+        &* Vulkan.set @"queueFamilyIndex" ( fromIntegral queueFamilyIndex )
+        &* Vulkan.set @"queueCount" 1
+        &* Vulkan.setListRef @"pQueuePriorities" [ 1.0 :: Float ]
+        )
 
-        Vulkan.writeField
-          @"pNext"
-          ptr
-          Foreign.nullPtr
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+        &* Vulkan.set @"pNext" Foreign.nullPtr
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"queueCreateInfoCount" 1
+        &* Vulkan.setListRef @"pQueueCreateInfos" [ queueCreateInfo ]
+        &* Vulkan.set @"enabledLayerCount" 0
+        &* Vulkan.set @"ppEnabledLayerNames" Foreign.nullPtr
+        &* Vulkan.set @"enabledExtensionCount" 1
+        &* Vulkan.setListRef
+             @"ppEnabledExtensionNames"
+             [ Vulkan.VK_KHR_SWAPCHAIN_EXTENSION_NAME ]
+        &* Vulkan.set @"pEnabledFeatures" Foreign.nullPtr
+        )
 
-        Vulkan.writeField
-          @"queueFamilyIndex"
-          ptr
-          ( fromIntegral queueFamilyIndex )
-
-        Vulkan.writeField
-          @"queueCount"
-          ptr
-          1
-
-        Foreign.Marshal.withArray [ 1.0 :: Float ] $
-          Vulkan.writeField
-            @"pQueuePriorities"
-            ptr
-
-    createInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
-
-        Vulkan.writeField
-          @"pNext"
-          ptr
-          Foreign.nullPtr
-
-        Vulkan.writeField
-          @"flags"
-          ptr
-          0
-
-        Vulkan.writeField
-          @"queueCreateInfoCount"
-          ptr
-          1
-
-        Foreign.Marshal.withArray [ queueCreateInfo ] $
-          Vulkan.writeField
-            @"pQueueCreateInfos"
-            ptr
-
-        Vulkan.writeField
-          @"enabledLayerCount"
-          ptr
-          0
-
-        Vulkan.writeField
-          @"ppEnabledLayerNames"
-          ptr
-          Foreign.nullPtr
-
-        Vulkan.writeField
-          @"enabledExtensionCount"
-          ptr
-          1
-
-        Foreign.Marshal.withArray [ Vulkan.VK_KHR_SWAPCHAIN_EXTENSION_NAME ] $
-          Vulkan.writeField @"ppEnabledExtensionNames" ptr
-
-        Vulkan.writeField
-          @"pEnabledFeatures"
-          ptr
-          Foreign.nullPtr
-
-    Vulkan.vkCreateDevice
-      physicalDevice
-      ( Vulkan.unsafePtr createInfo )
-      Foreign.nullPtr
-      devicePtr
-      >>= throwVkResult
-
-    Foreign.peek devicePtr
+  allocaAndPeek
+    ( Vulkan.vkCreateDevice
+        physicalDevice
+        ( Vulkan.unsafePtr createInfo )
+        Foreign.nullPtr
+        >=> throwVkResult
+    )
 
 
 determineSwapchainFormat
@@ -424,36 +312,28 @@ determineSwapchainFormat
   -> IO ( Vulkan.VkFormat, Vulkan.VkColorSpaceKHR )
 determineSwapchainFormat physicalDevice surface = do
   surfaceFormats <-
-    Foreign.Marshal.alloca $ \surfaceFormatCountPtr -> do
-      Vulkan.vkGetPhysicalDeviceSurfaceFormatsKHR
-        physicalDevice
-        ( Vulkan.VkPtr surface )
-        surfaceFormatCountPtr
-        Foreign.nullPtr
-        >>= throwVkResult
-
-      surfaceFormatCount <-
-        fromIntegral <$> Foreign.peek surfaceFormatCountPtr
-
-      Foreign.Marshal.allocaArray surfaceFormatCount $ \surfaceFormatsPtr -> do
+    fetchAll
+      ( \surfaceFormatCountPtr surfaceFormatsPtr ->
         Vulkan.vkGetPhysicalDeviceSurfaceFormatsKHR
           physicalDevice
           ( Vulkan.VkPtr surface )
           surfaceFormatCountPtr
           surfaceFormatsPtr
           >>= throwVkResult
+      )
 
-        Foreign.peekArray surfaceFormatCount surfaceFormatsPtr
-
-  scoredFormats <-
-    for surfaceFormats $ \surfaceFormat -> do
-      format <-
-        Vulkan.readField @"format" ( Vulkan.unsafePtr surfaceFormat )
-
-      colorSpace <-
-        Vulkan.readField @"colorSpace" ( Vulkan.unsafePtr surfaceFormat )
+  let
+    scoredFormats = do
+      surfaceFormat <-
+        surfaceFormats
 
       let
+        format =
+          Vulkan.getField @"format" surfaceFormat
+
+        colorSpace =
+          Vulkan.getField @"colorSpace" surfaceFormat
+
         score :: Int
         score =
           sum
@@ -461,9 +341,9 @@ determineSwapchainFormat physicalDevice surface = do
             , if colorSpace == Vulkan.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR then 1 else 0
             ]
 
-      return ( score, format, colorSpace )
+      return ( Down score, format, colorSpace )
 
-  case sortOn ( \( score, _, _ ) -> Down score ) scoredFormats of
+  case sortOn ( \( score, _, _ ) -> score ) scoredFormats of
     [] ->
       fail "No formats found"
 
@@ -480,121 +360,52 @@ createSwapchain
   -> IO ( Vulkan.VkSwapchainKHR, Vulkan.VkExtent2D )
 createSwapchain physicalDevice device surface format colorSpace = do
   surfaceCapabilities <-
-    Foreign.Marshal.alloca $ \ptr -> do
-      Vulkan.vkGetPhysicalDeviceSurfaceCapabilitiesKHR
-        physicalDevice
-        ( Vulkan.VkPtr surface )
-        ptr
-        >>= throwVkResult
+    allocaAndPeek
+      ( Vulkan.vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+          physicalDevice
+          ( Vulkan.VkPtr surface )
+          >=> throwVkResult
+      )
 
-      Foreign.peek ptr
+  let
+    minImageCount =
+      Vulkan.getField @"minImageCount" surfaceCapabilities
 
-  minImageCount <-
-    Vulkan.readField @"minImageCount" ( Vulkan.unsafePtr surfaceCapabilities )
+    currentExtent =
+      Vulkan.getField @"currentExtent" surfaceCapabilities
 
-  currentExtent <-
-    Vulkan.readField @"currentExtent" ( Vulkan.unsafePtr surfaceCapabilities )
+    currentTransform =
+      Vulkan.getField @"currentTransform" surfaceCapabilities
 
-  currentTransform <-
-    Vulkan.readField @"currentTransform" ( Vulkan.unsafePtr surfaceCapabilities )
-
-  swapchainCreateInfo <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField
-        @"sType"
-        ptr
-        Vulkan.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR
-
-      Vulkan.writeField
-        @"pNext"
-        ptr
-        Foreign.nullPtr
-
-      Vulkan.writeField
-        @"surface"
-        ptr
-        ( Vulkan.VkPtr surface )
-
-      Vulkan.writeField
-        @"minImageCount"
-        ptr
-        minImageCount
-
-      Vulkan.writeField
-        @"imageFormat"
-        ptr
-        format
-
-      Vulkan.writeField
-        @"imageColorSpace"
-        ptr
-        colorSpace
-
-      Vulkan.writeField
-        @"imageExtent"
-        ptr
-        currentExtent
-
-      Vulkan.writeField
-        @"imageArrayLayers"
-        ptr
-        1
-
-      Vulkan.writeField
-        @"imageUsage"
-        ptr
-        Vulkan.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-
-      Vulkan.writeField
-        @"imageSharingMode"
-        ptr
-        Vulkan.VK_SHARING_MODE_EXCLUSIVE
-
-      Vulkan.writeField
-        @"queueFamilyIndexCount"
-        ptr
-        0
-
-      Vulkan.writeField
-        @"pQueueFamilyIndices"
-        ptr
-        Vulkan.vkNullPtr
-
-      Vulkan.writeField
-        @"preTransform"
-        ptr
-        currentTransform
-
-      Vulkan.writeField
-        @"compositeAlpha"
-        ptr
-        Vulkan.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-
-      Vulkan.writeField
-        @"presentMode"
-        ptr
-        Vulkan.VK_PRESENT_MODE_FIFO_KHR
-
-      Vulkan.writeField
-        @"clipped"
-        ptr
-        Vulkan.VK_TRUE
-
-      Vulkan.writeField
-        @"oldSwapchain"
-        ptr
-        Vulkan.VK_NULL_HANDLE
+    swapchainCreateInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR
+        &* Vulkan.set @"pNext" Foreign.nullPtr
+        &* Vulkan.set @"surface" ( Vulkan.VkPtr surface )
+        &* Vulkan.set @"minImageCount" minImageCount
+        &* Vulkan.set @"imageFormat" format
+        &* Vulkan.set @"imageColorSpace" colorSpace
+        &* Vulkan.set @"imageExtent" currentExtent
+        &* Vulkan.set @"imageArrayLayers" 1
+        &* Vulkan.set @"imageUsage" Vulkan.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+        &* Vulkan.set @"imageSharingMode" Vulkan.VK_SHARING_MODE_EXCLUSIVE
+        &* Vulkan.set @"queueFamilyIndexCount" 0
+        &* Vulkan.set @"pQueueFamilyIndices" Vulkan.vkNullPtr
+        &* Vulkan.set @"preTransform" currentTransform
+        &* Vulkan.set @"compositeAlpha" Vulkan.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+        &* Vulkan.set @"presentMode" Vulkan.VK_PRESENT_MODE_FIFO_KHR
+        &* Vulkan.set @"clipped" Vulkan.VK_TRUE
+        &* Vulkan.set @"oldSwapchain" Vulkan.VK_NULL_HANDLE
+        )
 
   swapchain <-
-    Foreign.Marshal.alloca $ \swapchainPtr -> do
-      Vulkan.vkCreateSwapchainKHR
-        device
-        ( Vulkan.unsafePtr swapchainCreateInfo )
-        Foreign.nullPtr
-        swapchainPtr
-        >>= throwVkResult
-
-      Foreign.peek swapchainPtr
+    allocaAndPeek
+      ( Vulkan.vkCreateSwapchainKHR
+          device
+          ( Vulkan.unsafePtr swapchainCreateInfo )
+          Foreign.nullPtr
+          >=> throwVkResult
+      )
 
   return ( swapchain, currentExtent )
 
@@ -604,185 +415,73 @@ getSwapchainImages
   -> Vulkan.VkSwapchainKHR
   -> IO [ Vulkan.VkImage ]
 getSwapchainImages device swapchain =
-  Foreign.Marshal.alloca $ \imageCountPtr -> do
-    Vulkan.vkGetSwapchainImagesKHR
-      device
-      swapchain
-      imageCountPtr
-      Foreign.nullPtr
-      >>= throwVkResult
-
-    imageCount <-
-      fromIntegral <$> Foreign.peek imageCountPtr
-
-    Foreign.Marshal.allocaArray imageCount $ \imagesPtr -> do
-      Vulkan.vkGetSwapchainImagesKHR
-        device
-        swapchain
-        imageCountPtr
-        imagesPtr
-        >>= throwVkResult
-
-      Foreign.peekArray imageCount imagesPtr
+  fetchAll
+    ( \imageCountPtr imagesPtr ->
+        Vulkan.vkGetSwapchainImagesKHR
+          device
+          swapchain
+          imageCountPtr
+          imagesPtr
+          >>= throwVkResult
+    )
 
 
 createRenderPass :: Vulkan.VkDevice -> Vulkan.VkFormat -> IO Vulkan.VkRenderPass
 createRenderPass dev format = do
-  attachmentDescription <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField
-        @"flags"
-        ptr
-        0
+  let
+    attachmentDescription =
+      Vulkan.createVk
+        (  Vulkan.set @"flags" 0
+        &* Vulkan.set @"format" format
+        &* Vulkan.set @"samples" Vulkan.VK_SAMPLE_COUNT_1_BIT
+        &* Vulkan.set @"loadOp" Vulkan.VK_ATTACHMENT_LOAD_OP_CLEAR
+        &* Vulkan.set @"storeOp" Vulkan.VK_ATTACHMENT_STORE_OP_STORE
+        &* Vulkan.set @"stencilLoadOp" Vulkan.VK_ATTACHMENT_LOAD_OP_DONT_CARE
+        &* Vulkan.set @"stencilStoreOp" Vulkan.VK_ATTACHMENT_STORE_OP_DONT_CARE
+        &* Vulkan.set @"initialLayout" Vulkan.VK_IMAGE_LAYOUT_UNDEFINED
+        &* Vulkan.set @"finalLayout" Vulkan.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        )
 
-      Vulkan.writeField
-        @"format"
-        ptr
-        format
+    colorAttachmentReference =
+      Vulkan.createVk
+        (  Vulkan.set @"attachment" 0
+        &* Vulkan.set @"layout" Vulkan.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        )
 
-      Vulkan.writeField
-        @"samples"
-        ptr
-        Vulkan.VK_SAMPLE_COUNT_1_BIT
+    subpass =
+      Vulkan.createVk
+        (  Vulkan.set @"flags" 0
+        &* Vulkan.set @"pipelineBindPoint" Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
+        &* Vulkan.set @"inputAttachmentCount" 0
+        &* Vulkan.set @"pInputAttachments" Vulkan.vkNullPtr
+        &* Vulkan.set @"colorAttachmentCount" 1
+        &* Vulkan.setListRef @"pColorAttachments" [ colorAttachmentReference ]
+        &* Vulkan.set @"pResolveAttachments" Vulkan.vkNullPtr
+        &* Vulkan.set @"pDepthStencilAttachment" Vulkan.vkNullPtr
+        &* Vulkan.set @"preserveAttachmentCount" 0
+        &* Vulkan.set @"pPreserveAttachments" Vulkan.vkNullPtr
+        )
 
-      Vulkan.writeField
-        @"loadOp"
-        ptr
-        Vulkan.VK_ATTACHMENT_LOAD_OP_CLEAR
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"attachmentCount" 1
+        &* Vulkan.setListRef @"pAttachments" [ attachmentDescription ]
+        &* Vulkan.set @"subpassCount" 1
+        &* Vulkan.setListRef @"pSubpasses" [ subpass ]
+        &* Vulkan.set @"dependencyCount" 0
+        &* Vulkan.set @"pDependencies" Vulkan.vkNullPtr
+        )
 
-      Vulkan.writeField
-        @"storeOp"
-        ptr
-        Vulkan.VK_ATTACHMENT_STORE_OP_STORE
-
-      Vulkan.writeField
-        @"stencilLoadOp"
-        ptr
-        Vulkan.VK_ATTACHMENT_LOAD_OP_DONT_CARE
-
-      Vulkan.writeField
-        @"stencilStoreOp"
-        ptr
-        Vulkan.VK_ATTACHMENT_STORE_OP_DONT_CARE
-
-      Vulkan.writeField
-        @"initialLayout"
-        ptr
-        Vulkan.VK_IMAGE_LAYOUT_UNDEFINED
-
-      Vulkan.writeField
-        @"finalLayout"
-        ptr
-        Vulkan.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-
-  colorAttachmentReference <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"attachment" ptr 0
-
-      Vulkan.writeField
-        @"layout"
-        ptr
-        Vulkan.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-
-  subpass <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"flags" ptr 0
-
-      Vulkan.writeField
-        @"pipelineBindPoint"
-        ptr
-        Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
-
-      Vulkan.writeField
-        @"inputAttachmentCount"
-        ptr
-        0
-
-      Vulkan.writeField
-        @"pInputAttachments"
-        ptr
+  allocaAndPeek
+    ( Vulkan.vkCreateRenderPass
+        dev
+        ( Vulkan.unsafePtr createInfo )
         Vulkan.vkNullPtr
-
-      Vulkan.writeField
-        @"colorAttachmentCount"
-        ptr
-        1
-
-      Foreign.Marshal.withArray [ colorAttachmentReference ] $
-        Vulkan.writeField @"pColorAttachments" ptr
-
-      Vulkan.writeField
-        @"pResolveAttachments"
-        ptr
-        Vulkan.vkNullPtr
-
-      Vulkan.writeField
-        @"pDepthStencilAttachment"
-        ptr
-        Vulkan.vkNullPtr
-
-      Vulkan.writeField
-        @"preserveAttachmentCount"
-        ptr
-        0
-
-      Vulkan.writeField
-        @"pPreserveAttachments"
-        ptr
-        Vulkan.vkNullPtr
-
-  Foreign.Marshal.alloca $ \renderPassPtr -> do
-    createInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO
-
-        Vulkan.writeField
-          @"pNext"
-          ptr
-          Vulkan.vkNullPtr
-
-        Vulkan.writeField
-          @"flags"
-          ptr
-          0
-
-        Vulkan.writeField
-          @"attachmentCount"
-          ptr
-          1
-
-        Foreign.Marshal.withArray [ attachmentDescription ] $
-          Vulkan.writeField @"pAttachments" ptr
-
-        Vulkan.writeField
-          @"subpassCount"
-          ptr
-          1
-
-        Foreign.Marshal.withArray [ subpass ] $
-          Vulkan.writeField @"pSubpasses" ptr
-
-        Vulkan.writeField
-          @"dependencyCount"
-          ptr
-          0
-
-        Vulkan.writeField
-          @"pDependencies"
-          ptr
-          Vulkan.vkNullPtr
-
-    Vulkan.vkCreateRenderPass
-      dev
-      ( Vulkan.unsafePtr createInfo )
-      Vulkan.vkNullPtr
-      renderPassPtr
-      >>= throwVkResult
-
-    Foreign.peek renderPassPtr
+        >=> throwVkResult
+    )
 
 
 createFramebuffer
@@ -792,53 +491,27 @@ createFramebuffer
   -> Vulkan.VkExtent2D
   -> IO Vulkan.VkFramebuffer
 createFramebuffer dev renderPass colorImageView extent = do
-  Foreign.Marshal.alloca $ \framebufferPtr -> do
-    createInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO
+  let
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"renderPass" renderPass
+        &* Vulkan.set @"attachmentCount" 1
+        &* Vulkan.setListRef @"pAttachments" [ colorImageView ]
+        &* Vulkan.set @"width" ( Vulkan.getField @"width" extent )
+        &* Vulkan.set @"height" ( Vulkan.getField @"height" extent )
+        &* Vulkan.set @"layers" 1
+        )
 
-        Vulkan.writeField
-          @"pNext"
-          ptr
-          Vulkan.vkNullPtr
-
-        Vulkan.writeField
-          @"flags"
-          ptr
-          0
-
-        Vulkan.writeField
-          @"renderPass"
-          ptr
-          renderPass
-
-        Vulkan.writeField
-          @"attachmentCount"
-          ptr
-          1
-
-        Foreign.Marshal.withArray [ colorImageView ] $
-          Vulkan.writeField @"pAttachments" ptr
-
-        Vulkan.readField @"width" ( Vulkan.unsafePtr extent )
-          >>= Vulkan.writeField @"width" ptr
-
-        Vulkan.readField @"height" ( Vulkan.unsafePtr extent )
-          >>= Vulkan.writeField @"height" ptr
-
-        Vulkan.writeField @"layers" ptr 1
-
-    Vulkan.vkCreateFramebuffer
-      dev
-      ( Vulkan.unsafePtr createInfo )
-      Vulkan.vkNullPtr
-      framebufferPtr
-      >>= throwVkResult
-
-    Foreign.peek framebufferPtr
+  allocaAndPeek
+    ( Vulkan.vkCreateFramebuffer
+        dev
+        ( Vulkan.unsafePtr createInfo )
+        Vulkan.vkNullPtr
+        >=> throwVkResult
+    )
 
 
 createImageView
@@ -847,117 +520,84 @@ createImageView
   -> Vulkan.VkFormat
   -> IO Vulkan.VkImageView
 createImageView dev image format = do
-  components <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"r" ptr Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+  let
+    components =
+      Vulkan.createVk
+        (  Vulkan.set @"r" Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+        &* Vulkan.set @"g" Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+        &* Vulkan.set @"b" Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+        &* Vulkan.set @"a" Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+        )
 
-      Vulkan.writeField @"g" ptr Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+    subResourceRange =
+      Vulkan.createVk
+        (  Vulkan.set @"aspectMask" Vulkan.VK_IMAGE_ASPECT_COLOR_BIT
+        &* Vulkan.set @"baseMipLevel" 0
+        &* Vulkan.set @"levelCount" 1
+        &* Vulkan.set @"baseArrayLayer" 0
+        &* Vulkan.set @"layerCount" 1
+        )
 
-      Vulkan.writeField @"b" ptr Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
+    createInfo =
+      Vulkan.createVk
+        ( Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"image" image
+        &* Vulkan.set @"viewType" Vulkan.VK_IMAGE_VIEW_TYPE_2D
+        &* Vulkan.set @"format" format
+        &* Vulkan.set @"components" components
+        &* Vulkan.set @"subresourceRange" subResourceRange
+        )
 
-      Vulkan.writeField @"a" ptr Vulkan.VK_COMPONENT_SWIZZLE_IDENTITY
-
-  subResourceRange <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"aspectMask" ptr Vulkan.VK_IMAGE_ASPECT_COLOR_BIT
-
-      Vulkan.writeField @"baseMipLevel" ptr 0
-
-      Vulkan.writeField @"levelCount" ptr 1
-
-      Vulkan.writeField @"baseArrayLayer" ptr 0
-
-      Vulkan.writeField @"layerCount" ptr 1
-
-  Foreign.Marshal.alloca $ \imageViewPtr -> do
-    createInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO
-
-        Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-        Vulkan.writeField @"flags" ptr 0
-
-        Vulkan.writeField @"image" ptr image
-
-        Vulkan.writeField @"viewType" ptr Vulkan.VK_IMAGE_VIEW_TYPE_2D
-
-        Vulkan.writeField @"format" ptr format
-
-        Vulkan.writeField @"components" ptr components
-
-        Vulkan.writeField @"subresourceRange" ptr subResourceRange
-
-    Vulkan.vkCreateImageView
-      dev
-      ( Vulkan.unsafePtr createInfo )
-      Vulkan.vkNullPtr
-      imageViewPtr
-      >>= throwVkResult
-
-    Foreign.peek imageViewPtr
+  allocaAndPeek
+    ( Vulkan.vkCreateImageView
+        dev
+        ( Vulkan.unsafePtr createInfo )
+        Vulkan.vkNullPtr
+        >=> throwVkResult
+    )
 
 
 createCommandPool :: Vulkan.VkDevice -> Int -> IO Vulkan.VkCommandPool
 createCommandPool dev queueFamilyIndex = do
-  Foreign.Marshal.alloca $ \commandPoolPtr -> do
-    createInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO
+  let
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"queueFamilyIndex" ( fromIntegral queueFamilyIndex )
+        )
 
-        Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-        Vulkan.writeField @"flags" ptr 0
-
-        Vulkan.writeField
-          @"queueFamilyIndex"
-          ptr
-          ( fromIntegral queueFamilyIndex )
-
-    Vulkan.vkCreateCommandPool
-      dev
-      ( Vulkan.unsafePtr createInfo )
-      Vulkan.vkNullPtr
-      commandPoolPtr
-      >>= throwVkResult
-
-    Foreign.peek commandPoolPtr
+  allocaAndPeek
+    ( Vulkan.vkCreateCommandPool
+        dev
+        ( Vulkan.unsafePtr createInfo )
+        Vulkan.vkNullPtr
+        >=> throwVkResult
+    )
 
 
 allocateCommandBuffer
   :: Vulkan.VkDevice
   -> Vulkan.VkCommandPool
   -> IO Vulkan.VkCommandBuffer
-allocateCommandBuffer dev commandPool =
-  Foreign.Marshal.alloca $ \commandBufferPtr -> do
-    allocInfo <-
-      Vulkan.newVkData $ \ptr -> do
-        Vulkan.writeField
-          @"sType"
-          ptr
-          Vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
+allocateCommandBuffer dev commandPool = do
+  let
+    allocInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"commandPool" commandPool
+        &* Vulkan.set @"level" Vulkan.VK_COMMAND_BUFFER_LEVEL_PRIMARY
+        &* Vulkan.set @"commandBufferCount" 1
+        )
 
-        Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-        Vulkan.writeField @"commandPool" ptr commandPool
-
-        Vulkan.writeField @"level" ptr Vulkan.VK_COMMAND_BUFFER_LEVEL_PRIMARY
-
-        Vulkan.writeField @"commandBufferCount" ptr 1
-
-    Vulkan.vkAllocateCommandBuffers
-      dev
-      ( Vulkan.unsafePtr allocInfo )
-      commandBufferPtr
-      >>= throwVkResult
-
-    Foreign.peek commandBufferPtr
+  allocaAndPeek
+    ( Vulkan.vkAllocateCommandBuffers dev ( Vulkan.unsafePtr allocInfo )
+        >=> throwVkResult
+    )
 
 
 recordRenderPass
@@ -967,46 +607,40 @@ recordRenderPass
   -> Vulkan.VkExtent2D
   -> IO ()
 recordRenderPass commandBuffer renderPass framebuffer extent = do
-  blue <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeFieldArray @"float32" @0 ptr 0
+  let
+    blue =
+      Vulkan.createVk
+        (  Vulkan.setAt @"float32" @0 0
+        &* Vulkan.setAt @"float32" @1 0
+        &* Vulkan.setAt @"float32" @2 1
+        &* Vulkan.setAt @"float32" @3 1
+        )
 
-      Vulkan.writeFieldArray @"float32" @1 ptr 0
+    clearValues =
+      Vulkan.createVk ( Vulkan.set @"color" blue )
 
-      Vulkan.writeFieldArray @"float32" @2 ptr 1
+    zeroZero =
+      Vulkan.createVk
+        (  Vulkan.set @"x" 0
+        &* Vulkan.set @"y" 0
+        )
 
-      Vulkan.writeFieldArray @"float32" @3 ptr 1
+    renderArea =
+      Vulkan.createVk
+        (  Vulkan.set @"offset" zeroZero
+        &* Vulkan.set @"extent" extent
+        )
 
-  clearValues <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"color" ptr blue
-
-  zeroZero <-
-    Vulkan.newVkData $ \ptr -> do
-    Vulkan.writeField @"x" ptr 0
-    Vulkan.writeField @"y" ptr 0
-
-  renderArea <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"offset" ptr zeroZero
-      Vulkan.writeField @"extent" ptr extent
-
-  beginInfo <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO
-
-      Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-      Vulkan.writeField @"renderPass" ptr renderPass
-
-      Vulkan.writeField @"framebuffer" ptr framebuffer
-
-      Vulkan.writeField @"renderArea" ptr renderArea
-
-      Vulkan.writeField @"clearValueCount" ptr 1
-
-      Foreign.Marshal.withArray [ clearValues ] $
-        Vulkan.writeField @"pClearValues" ptr
+    beginInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"renderPass" renderPass
+        &* Vulkan.set @"framebuffer" framebuffer
+        &* Vulkan.set @"renderArea" renderArea
+        &* Vulkan.set @"clearValueCount" 1
+        &* Vulkan.setListRef @"pClearValues" [ clearValues ]
+        )
 
   Vulkan.vkCmdBeginRenderPass
     commandBuffer
@@ -1019,17 +653,18 @@ acquireNextImage
   -> Vulkan.VkSemaphore
   -> IO Int
 acquireNextImage device swapchain signal =
-  Foreign.Marshal.alloca $ \ptr -> do
-    Vulkan.vkAcquireNextImageKHR
-      device
-      swapchain
-      maxBound
-      signal
-      Vulkan.VK_NULL_HANDLE
-      ptr
-      >>= throwVkResult
-
-    fromIntegral <$> Foreign.peek ptr
+  fmap
+    fromIntegral
+    ( allocaAndPeek
+        ( Vulkan.vkAcquireNextImageKHR
+            device
+            swapchain
+            maxBound
+            signal
+            Vulkan.VK_NULL_HANDLE
+            >=> throwVkResult
+        )
+    )
 
 
 present
@@ -1039,26 +674,18 @@ present
   -> Vulkan.VkSemaphore
   -> IO ()
 present queue swapchain imageIndex wait = do
-  presentInfo <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR
-
-      Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-      Vulkan.writeField @"waitSemaphoreCount" ptr 1
-
-      Foreign.Marshal.withArray [ wait ] $
-        Vulkan.writeField @"pWaitSemaphores" ptr
-
-      Vulkan.writeField @"swapchainCount" ptr 1
-
-      Foreign.Marshal.withArray [ swapchain ] $
-        Vulkan.writeField @"pSwapchains" ptr
-
-      Foreign.Marshal.withArray [ fromIntegral imageIndex ] $
-        Vulkan.writeField @"pImageIndices" ptr
-
-      Vulkan.writeField @"pResults" ptr Vulkan.vkNullPtr
+  let
+    presentInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"waitSemaphoreCount" 1
+        &* Vulkan.setListRef @"pWaitSemaphores" [ wait ]
+        &* Vulkan.set @"swapchainCount" 1
+        &* Vulkan.setListRef @"pSwapchains" [ swapchain ]
+        &* Vulkan.setListRef @"pImageIndices" [ fromIntegral imageIndex ]
+        &* Vulkan.set @"pResults" Vulkan.vkNullPtr
+        )
 
   Vulkan.vkQueuePresentKHR queue ( Vulkan.unsafePtr presentInfo )
     >>= throwVkResult
@@ -1066,38 +693,31 @@ present queue swapchain imageIndex wait = do
 
 getQueue :: Vulkan.VkDevice -> Int -> IO Vulkan.VkQueue
 getQueue device queueFamilyIndex =
-  Foreign.Marshal.alloca $ \queuePtr -> do
-    Vulkan.vkGetDeviceQueue
-      device
-      ( fromIntegral queueFamilyIndex )
-      0
-      queuePtr
-
-    Foreign.peek queuePtr
+  allocaAndPeek
+    ( Vulkan.vkGetDeviceQueue
+        device
+        ( fromIntegral queueFamilyIndex )
+        0
+    )
 
 
 createSemaphore :: Vulkan.VkDevice -> IO Vulkan.VkSemaphore
 createSemaphore device = do
-  createInfo <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField
-        @"sType"
-        ptr
-        Vulkan.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+  let
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL_HANDLE
+        &* Vulkan.set @"flags" 0
+        )
 
-      Vulkan.writeField @"pNext" ptr Vulkan.VK_NULL_HANDLE
-
-      Vulkan.writeField @"flags" ptr 0
-
-  Foreign.Marshal.alloca $ \semaphorePtr -> do
-    Vulkan.vkCreateSemaphore
-      device
-      ( Vulkan.unsafePtr createInfo )
-      Vulkan.vkNullPtr
-      semaphorePtr
-      >>= throwVkResult
-
-    Foreign.peek semaphorePtr
+  allocaAndPeek
+    ( Vulkan.vkCreateSemaphore
+        device
+        ( Vulkan.unsafePtr createInfo )
+        Vulkan.vkNullPtr
+        >=> throwVkResult
+    )
 
 
 assertSurfacePresentable
@@ -1107,15 +727,13 @@ assertSurfacePresentable
   -> IO ()
 assertSurfacePresentable physicalDevice queueFamilyIndex surface = do
   bool <-
-    Foreign.Marshal.alloca $ \presentablePtr -> do
-      Vulkan.vkGetPhysicalDeviceSurfaceSupportKHR
-        physicalDevice
-        ( fromIntegral queueFamilyIndex )
-        ( Vulkan.VkPtr surface )
-        presentablePtr
-        >>= throwVkResult
-
-      Foreign.peek presentablePtr
+    allocaAndPeek
+      ( Vulkan.vkGetPhysicalDeviceSurfaceSupportKHR
+          physicalDevice
+          ( fromIntegral queueFamilyIndex )
+          ( Vulkan.VkPtr surface )
+          >=> throwVkResult
+      )
 
   unless
     ( bool == Vulkan.VK_TRUE )
@@ -1134,29 +752,21 @@ submitCommandBuffer
   -> Vulkan.VkSemaphore
   -> IO ()
 submitCommandBuffer queue commandBuffer wait signal = do
-  submitInfo <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_SUBMIT_INFO
-
-      Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-      Vulkan.writeField @"waitSemaphoreCount" ptr 1
-
-      Foreign.Marshal.withArray [ wait ] $
-        Vulkan.writeField @"pWaitSemaphores" ptr
-
-      Foreign.Marshal.withArray [ Vulkan.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ] $
-        Vulkan.writeField @"pWaitDstStageMask" ptr
-
-      Vulkan.writeField @"commandBufferCount" ptr 1
-
-      Foreign.Marshal.withArray [ commandBuffer ] $
-        Vulkan.writeField @"pCommandBuffers" ptr
-
-      Vulkan.writeField @"signalSemaphoreCount" ptr 1
-
-      Foreign.Marshal.withArray [ signal ] $
-        Vulkan.writeField @"pSignalSemaphores" ptr
+  let
+    submitInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_SUBMIT_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"waitSemaphoreCount" 1
+        &* Vulkan.setListRef @"pWaitSemaphores" [ wait ]
+        &* Vulkan.setListRef
+             @"pWaitDstStageMask"
+             [ Vulkan.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+        &* Vulkan.set @"commandBufferCount" 1
+        &* Vulkan.setListRef @"pCommandBuffers" [ commandBuffer ]
+        &* Vulkan.set @"signalSemaphoreCount" 1
+        &* Vulkan.setListRef @"pSignalSemaphores" [ signal ]
+        )
 
   Foreign.Marshal.withArray [ submitInfo ] $ \submits ->
     Vulkan.vkQueueSubmit
@@ -1169,15 +779,14 @@ submitCommandBuffer queue commandBuffer wait signal = do
 
 beginCommandBuffer :: Vulkan.VkCommandBuffer -> IO ()
 beginCommandBuffer commandBuffer = do
-  commandBufferBeginInfo <-
-    Vulkan.newVkData $ \ptr -> do
-      Vulkan.writeField @"sType" ptr Vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
-
-      Vulkan.writeField @"pNext" ptr Vulkan.vkNullPtr
-
-      Vulkan.writeField @"flags" ptr 0
-
-      Vulkan.writeField @"pInheritanceInfo" ptr Vulkan.vkNullPtr
+  let
+    commandBufferBeginInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+        &* Vulkan.set @"pNext" Vulkan.vkNullPtr
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"pInheritanceInfo" Vulkan.vkNullPtr
+        )
 
   Vulkan.vkBeginCommandBuffer
     commandBuffer
@@ -1188,3 +797,30 @@ beginCommandBuffer commandBuffer = do
 endCommandBuffer :: Vulkan.VkCommandBuffer -> IO ()
 endCommandBuffer =
   Vulkan.vkEndCommandBuffer >=> throwVkResult
+
+
+allocaAndPeek :: Foreign.Storable a => ( Vulkan.Ptr a -> IO () ) -> IO a
+allocaAndPeek f =
+  Foreign.Marshal.alloca
+    ( \ptr ->
+        f ptr *> Foreign.peek ptr
+    )
+
+
+allocaAndPeekArray :: Foreign.Storable a => Int -> ( Vulkan.Ptr a -> IO () ) -> IO [ a ]
+allocaAndPeekArray n f =
+  Foreign.Marshal.allocaArray
+    n
+    ( \ptr ->
+        f ptr *> Foreign.Marshal.peekArray n ptr
+    )
+
+
+fetchAll f = do
+  Foreign.Marshal.alloca $ \nPtr -> do
+    f nPtr Vulkan.vkNullPtr
+
+    n <-
+      fromIntegral <$> Foreign.peek nPtr
+
+    allocaAndPeekArray n ( f nPtr )
