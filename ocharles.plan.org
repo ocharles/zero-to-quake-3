@@ -3,21 +3,39 @@
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 * Today
-** [X] Finish recording a render pass to the command buffer
-** [X] Add the validation layer :correctness:
-** [X] Submit the command buffer for rendering
-** [ ] We have a blue screen!
+** [X] A DSL for building Vulkan structs :refactoring:
 
+** [X] Resource cleanup :correctness:
 
-* Tuesday
-** [X] Build a render pass :progress:
-
-
-* Todo
-** [ ] A DSL for building Vulkan structs :refactoring:
-** [ ] Resource cleanup :correctness:
 ** [ ] Find out how to correctly use vulkan-loader
 
 It currently requires me to change =LD_LIBRARY_PATH= to contain
 vulkan-loader.so.
 
+** [ ] Determine the presentation queue :correctness:
+
+** [ ] Check for VK_KHR_SWAPCHAIN_EXTENSION_NAME :correctness:
+
+** [ ] Triple buffering
+
+** [ ] Frame fences to limit in flight frames
+
+** [ ] Check that VK_KHR_swapchain is supported
+
+** [ ] Use cabal2nix to generate Nix environment
+
+** [X] Render a triangle! :progress:
+
+** [ ] Factor out the pattern of setting a list and the length at once :correctness:
+
+** [ ] Form a module structure
+
+* Thursday
+** [X] Finish recording a render pass to the command buffer
+** [X] Add the validation layer :correctness:
+** [X] Submit the command buffer for rendering
+** [X] We have a blue screen!
+
+
+* Tuesday
+** [X] Build a render pass :progress:
