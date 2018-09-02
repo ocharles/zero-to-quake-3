@@ -3,11 +3,8 @@
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 * Today
-** [X] A DSL for building Vulkan structs :refactoring:
 
-** [X] Resource cleanup :correctness:
-
-** [ ] Find out how to correctly use vulkan-loader
+** [X] Find out how to correctly use vulkan-loader :correctness:
 
 It currently requires me to change =LD_LIBRARY_PATH= to contain
 vulkan-loader.so.
@@ -24,11 +21,17 @@ vulkan-loader.so.
 
 ** [ ] Use cabal2nix to generate Nix environment
 
-** [X] Render a triangle! :progress:
-
 ** [ ] Factor out the pattern of setting a list and the length at once :correctness:
 
 ** [ ] Form a module structure
+
+
+* Friday
+** [X] A DSL for building Vulkan structs :refactoring:
+** [X] Resource cleanup :correctness:
+
+** [X] Render a triangle! :progress:
+
 
 * Thursday
 ** [X] Finish recording a render pass to the command buffer

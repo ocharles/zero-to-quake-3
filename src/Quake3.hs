@@ -1,7 +1,11 @@
+{-# language AllowAmbiguousTypes #-}
+{-# language GeneralizedNewtypeDeriving #-}
 {-# language DataKinds #-}
 {-# language FlexibleContexts #-}
 {-# language OverloadedStrings #-}
 {-# language RankNTypes #-}
+{-# language RecordWildCards #-}
+{-# language ScopedTypeVariables #-}
 {-# language TypeApplications #-}
 {-# language TypeFamilies #-}
 
@@ -12,8 +16,8 @@ import Control.Exception ( bracket )
 import Control.Monad ( (>=>), forever, guard, unless )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Bits
-import Data.Ord ( Down(..) )
 import Data.List
+import Data.Ord ( Down(..) )
 import Data.Traversable ( for )
 import qualified Foreign
 import qualified Foreign.C
@@ -21,6 +25,9 @@ import qualified Foreign.Marshal
 
 -- bytestring
 import qualified Data.ByteString
+
+-- linear
+import Linear ( V2(..), V3(..) )
 
 -- managed
 import Control.Monad.Managed ( MonadManaged, runManaged )
@@ -120,12 +127,27 @@ main = runManaged $ do
   graphicsPipeline <-
     createGraphicsPipeline device renderPass extent
 
+  let
+    vertices =
+      [ V2 ( V3 0.5 (-0.5) 0 ) ( V3 1 0 0 )
+      , V2 ( V3 0.5 0.5 0 ) ( V3 1 0 0 )
+      , V2 ( V3 (-0.5) 0.5 0 ) ( V3 1 0 0 )
+      ]
+
+  vertexBuffer <-
+    createVertexBuffer physicalDevice device vertices
+
   commandBuffers <-
     for framebuffers $ \framebuffer -> do
       commandBuffer <-
         allocateCommandBuffer device commandPool
 
       beginCommandBuffer commandBuffer
+
+      liftIO $
+        Foreign.Marshal.withArray [ vertexBuffer ] $ \buffers ->
+        Foreign.Marshal.withArray [ 0 ] $ \offsets ->
+        Vulkan.vkCmdBindVertexBuffers commandBuffer 0 1 buffers offsets
 
       recordRenderPass commandBuffer renderPass framebuffer extent
 
@@ -135,7 +157,12 @@ main = runManaged $ do
           Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
           graphicsPipeline
 
-        Vulkan.vkCmdDraw commandBuffer 3 1 0 0
+        Vulkan.vkCmdDraw
+          commandBuffer
+          ( fromIntegral ( length vertices ) )
+          1
+          0
+          0
 
       finishRenderPass commandBuffer
 
@@ -846,8 +873,11 @@ endCommandBuffer =
   liftIO . Vulkan.vkEndCommandBuffer >=> throwVkResult
 
 
-allocaAndPeek :: Foreign.Storable a => ( Vulkan.Ptr a -> IO () ) -> IO a
+allocaAndPeek
+  :: ( Foreign.Storable a, MonadIO m )
+  => ( Vulkan.Ptr a -> IO () ) -> m a
 allocaAndPeek f =
+  liftIO $
   Foreign.Marshal.alloca
     ( \ptr ->
         f ptr *> Foreign.peek ptr
@@ -972,12 +1002,41 @@ createGraphicsPipeline device renderPass extent = do
         &* Vulkan.set @"stage" Vulkan.VK_SHADER_STAGE_FRAGMENT_BIT
         )
 
+    vertexBindingDescription =
+      Vulkan.createVk
+        (  Vulkan.set @"binding" 0
+        &* Vulkan.set @"stride" ( fromIntegral ( Foreign.sizeOf ( undefined :: Vertex ) ) )
+        &* Vulkan.set @"inputRate" Vulkan.VK_VERTEX_INPUT_RATE_VERTEX
+        )
+
+    positionAttributeDescription =
+      Vulkan.createVk
+        (  Vulkan.set @"location" 0
+        &* Vulkan.set @"binding" 0
+        &* Vulkan.set @"format" Vulkan.VK_FORMAT_R32G32B32_SFLOAT
+        &* Vulkan.set @"offset" 0
+        )
+
+    colorAttributeDescription =
+      Vulkan.createVk
+        (  Vulkan.set @"location" 1
+        &* Vulkan.set @"binding" 0
+        &* Vulkan.set @"format" Vulkan.VK_FORMAT_R32G32B32_SFLOAT
+        &* Vulkan.set @"offset" ( fromIntegral ( Foreign.sizeOf ( undefined :: V3 Foreign.C.CFloat ) ) )
+        )
+
     vertexInputState =
       Vulkan.createVk
         (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
-        &* Vulkan.set @"pVertexAttributeDescriptions" Vulkan.VK_NULL
-        &* Vulkan.set @"pVertexBindingDescriptions" Vulkan.VK_NULL
         &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"vertexBindingDescriptionCount" 1
+        &* Vulkan.setListRef @"pVertexBindingDescriptions" [ vertexBindingDescription ]
+        &* Vulkan.set @"vertexAttributeDescriptionCount" 2
+        &* Vulkan.setListRef
+             @"pVertexAttributeDescriptions"
+             [ positionAttributeDescription
+             , colorAttributeDescription
+             ]
         )
 
     assemblyStateCreateInfo =
@@ -1113,3 +1172,114 @@ loadShader device srcFile = do
           Vulkan.vkCreateShaderModule device ( Vulkan.unsafePtr createInfo ) a b
     )
     ( Vulkan.vkDestroyShaderModule device )
+
+
+createVertexBuffer
+  :: MonadManaged m
+  => Vulkan.VkPhysicalDevice
+  -> Vulkan.VkDevice
+  -> [ Vertex ]
+  -> m Vulkan.VkBuffer
+createVertexBuffer physicalDevice device vertices = do
+  let
+    sizeInBytes =
+      fromIntegral ( length vertices * Foreign.sizeOf ( head vertices ) )
+
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"size" sizeInBytes
+        &* Vulkan.set @"usage" Vulkan.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+        &* Vulkan.set @"sharingMode" Vulkan.VK_SHARING_MODE_EXCLUSIVE
+        &* Vulkan.set @"queueFamilyIndexCount" 0
+        &* Vulkan.set @"pQueueFamilyIndices" Vulkan.VK_NULL
+        )
+
+  buffer <-
+    managedVulkanResource
+      ( Vulkan.vkCreateBuffer device ( Vulkan.unsafePtr createInfo ) )
+      ( Vulkan.vkDestroyBuffer device )
+
+  requirements <-
+    allocaAndPeek
+      ( Vulkan.vkGetBufferMemoryRequirements device buffer )
+
+  memoryProperties <-
+    allocaAndPeek
+      ( Vulkan.vkGetPhysicalDeviceMemoryProperties physicalDevice )
+
+  let
+    memoryTypeCount =
+      Vulkan.getField @"memoryTypeCount" memoryProperties
+
+  memoryTypes <-
+    liftIO $
+    Foreign.Marshal.peekArray
+      @Vulkan.VkMemoryType
+      ( fromIntegral memoryTypeCount )
+      ( Vulkan.unsafePtr memoryProperties
+          `Foreign.plusPtr` Vulkan.fieldOffset @"memoryTypes" @Vulkan.VkPhysicalDeviceMemoryProperties
+      )
+
+  let
+    requiredFlags =
+      Vulkan.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT .|. Vulkan.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+
+    possibleMemoryTypeIndices = do
+      ( i, memoryType ) <-
+        zip [ 0 .. ] memoryTypes
+
+      guard
+        ( testBit
+            ( Vulkan.getField @"memoryTypeBits" requirements )
+            ( fromIntegral i )
+        )
+
+      guard
+        ( Vulkan.getField @"propertyFlags" memoryType .&. requiredFlags > 0 )
+
+      return i
+
+  memoryTypeIndex <-
+      case possibleMemoryTypeIndices of
+        [] ->
+          fail "No possible memory types"
+
+        ( i : _ ) ->
+          return i
+
+  let
+    allocateInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"allocationSize" ( Vulkan.getField @"size" requirements )
+        &* Vulkan.set @"memoryTypeIndex" memoryTypeIndex
+        )
+
+  memory <-
+    allocaAndPeek
+      ( Vulkan.vkAllocateMemory
+          device
+          ( Vulkan.unsafePtr allocateInfo )
+          Vulkan.VK_NULL_HANDLE
+          >=> throwVkResult
+      )
+
+  liftIO $ do
+    Vulkan.vkBindBufferMemory device buffer memory 0
+      >>= throwVkResult
+
+    memPtr <-
+      allocaAndPeek ( Vulkan.vkMapMemory device memory 0 sizeInBytes 0 >=> throwVkResult )
+
+    Foreign.Marshal.pokeArray ( Foreign.castPtr memPtr ) vertices
+
+    Vulkan.vkUnmapMemory device memory
+
+  return buffer
+
+
+type Vertex = V2 ( V3 Foreign.C.CFloat )
