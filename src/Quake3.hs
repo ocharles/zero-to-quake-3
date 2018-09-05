@@ -16,7 +16,7 @@ import Control.Exception ( bracket )
 import Control.Monad ( (>=>), forever, guard, unless )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Bits
-import Data.List
+import Data.List hiding ( transpose )
 import Data.Ord ( Down(..) )
 import Data.Traversable ( for )
 import qualified Foreign
@@ -27,7 +27,7 @@ import qualified Foreign.Marshal
 import qualified Data.ByteString
 
 -- linear
-import Linear ( V2(..), V3(..) )
+import Linear ( (!*!), identity, perspective, transpose, M44, V2(..), V3(..) )
 
 -- managed
 import Control.Monad.Managed ( MonadManaged, runManaged )
@@ -124,18 +124,47 @@ main = runManaged $ do
   submitted <-
     createSemaphore device
 
-  graphicsPipeline <-
-    createGraphicsPipeline device renderPass extent
+  descriptorSetLayout <-
+    createDescriptorSetLayout device
+
+  descriptorPool <-
+    createDescriptorPool device
+
+  descriptorSet <-
+    allocateDescriptorSet device descriptorPool descriptorSetLayout
+
+  ( graphicsPipeline, pipelineLayout ) <-
+    createGraphicsPipeline device renderPass extent descriptorSetLayout
 
   let
     vertices =
-      [ V2 ( V3 0.5 (-0.5) 0 ) ( V3 1 0 0 )
-      , V2 ( V3 0.5 0.5 0 ) ( V3 1 0 0 )
-      , V2 ( V3 (-0.5) 0.5 0 ) ( V3 1 0 0 )
+      [ V2 ( V3 0 1 (-5) ) ( V3 1 0 0 )
+      , V2 ( V3 1 0 (-5) ) ( V3 1 0 0 )
+      , V2 ( V3 (-1) 0 (-5) ) ( V3 1 0 0 )
       ]
 
   vertexBuffer <-
     createVertexBuffer physicalDevice device vertices
+
+  uniformBuffer <-
+    let
+      view =
+        identity
+
+      model =
+        identity
+
+      projection =
+        perspective ( pi / 2 ) ( 4 / 3 ) 0.1 100
+
+      modelViewProjection :: M44 Foreign.C.CFloat
+      modelViewProjection =
+        transpose ( projection !*! view !*! model )
+
+    in
+    createUniformBuffer physicalDevice device modelViewProjection
+
+  updateDescriptorSet device descriptorSet uniformBuffer
 
   commandBuffers <-
     for framebuffers $ \framebuffer -> do
@@ -156,6 +185,17 @@ main = runManaged $ do
           commandBuffer
           Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
           graphicsPipeline
+
+        Foreign.Marshal.withArray [ descriptorSet ] $ \descriptorSetsPtr ->
+          Vulkan.vkCmdBindDescriptorSets
+            commandBuffer
+            Vulkan.VK_PIPELINE_BIND_POINT_GRAPHICS
+            pipelineLayout
+            0
+            1
+            descriptorSetsPtr
+            0
+            Vulkan.vkNullPtr
 
         Vulkan.vkCmdDraw
           commandBuffer
@@ -939,8 +979,9 @@ createGraphicsPipeline
   => Vulkan.VkDevice
   -> Vulkan.VkRenderPass
   -> Vulkan.VkExtent2D
-  -> m Vulkan.VkPipeline
-createGraphicsPipeline device renderPass extent = do
+  -> Vulkan.VkDescriptorSetLayout
+  -> m ( Vulkan.VkPipeline, Vulkan.VkPipelineLayout )
+createGraphicsPipeline device renderPass extent layout0 = do
   pipelineLayout <-
     let
       pipelineLayoutCreateInfo =
@@ -948,7 +989,8 @@ createGraphicsPipeline device renderPass extent = do
           (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
           &* Vulkan.set @"pNext" Vulkan.VK_NULL
           &* Vulkan.set @"flags" 0
-          &* Vulkan.set @"pSetLayouts" Vulkan.VK_NULL
+          &* Vulkan.set @"setLayoutCount" 1
+          &* Vulkan.setListRef @"pSetLayouts" [ layout0 ]
           &* Vulkan.set @"pPushConstantRanges" Vulkan.VK_NULL
           )
 
@@ -1140,14 +1182,17 @@ createGraphicsPipeline device renderPass extent = do
         &* Vulkan.setVkRef @"pColorBlendState" colorBlendState
         )
 
-  managedVulkanResource
-    ( Vulkan.vkCreateGraphicsPipelines
-        device
-        Vulkan.vkNullPtr
-        1
-        ( Vulkan.unsafePtr createInfo )
-    )
-    ( Vulkan.vkDestroyPipeline device )
+  pipeline <-
+    managedVulkanResource
+      ( Vulkan.vkCreateGraphicsPipelines
+          device
+          Vulkan.vkNullPtr
+          1
+          ( Vulkan.unsafePtr createInfo )
+      )
+      ( Vulkan.vkDestroyPipeline device )
+
+  return ( pipeline, pipelineLayout )
 
 
 loadShader :: MonadManaged m => Vulkan.VkDevice -> FilePath -> m Vulkan.VkShaderModule
@@ -1180,18 +1225,51 @@ createVertexBuffer
   -> Vulkan.VkDevice
   -> [ Vertex ]
   -> m Vulkan.VkBuffer
-createVertexBuffer physicalDevice device vertices = do
-  let
-    sizeInBytes =
-      fromIntegral ( length vertices * Foreign.sizeOf ( head vertices ) )
+createVertexBuffer physicalDevice device vertices =
+  createBuffer
+    device
+    physicalDevice
+    Vulkan.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+    ( \memPtr -> Foreign.Marshal.pokeArray ( Foreign.castPtr memPtr ) vertices )
+    ( fromIntegral ( length vertices * Foreign.sizeOf ( head vertices ) ) )
 
+
+createUniformBuffer
+  :: ( MonadManaged m, Foreign.Storable a )
+  => Vulkan.VkPhysicalDevice
+  -> Vulkan.VkDevice
+  -> a
+  -> m Vulkan.VkBuffer
+createUniformBuffer physicalDevice device bufferData =
+  createBuffer
+    device
+    physicalDevice
+    Vulkan.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+    ( \memPtr -> Foreign.poke ( Foreign.castPtr memPtr ) bufferData )
+    ( fromIntegral ( Foreign.sizeOf bufferData ) )
+
+
+
+type Vertex = V2 ( V3 Foreign.C.CFloat )
+
+
+createBuffer
+  :: MonadManaged m
+  => Vulkan.VkDevice
+  -> Vulkan.VkPhysicalDevice
+  -> Vulkan.VkBufferUsageBitmask Vulkan.FlagMask
+  -> (Vulkan.Ptr Vulkan.Void -> IO ())
+  -> Vulkan.VkDeviceSize
+  -> m Vulkan.VkBuffer
+createBuffer device physicalDevice usage poke sizeInBytes = do
+  let
     createInfo =
       Vulkan.createVk
         (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
         &* Vulkan.set @"pNext" Vulkan.VK_NULL
         &* Vulkan.set @"flags" 0
         &* Vulkan.set @"size" sizeInBytes
-        &* Vulkan.set @"usage" Vulkan.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+        &* Vulkan.set @"usage" usage
         &* Vulkan.set @"sharingMode" Vulkan.VK_SHARING_MODE_EXCLUSIVE
         &* Vulkan.set @"queueFamilyIndexCount" 0
         &* Vulkan.set @"pQueueFamilyIndices" Vulkan.VK_NULL
@@ -1275,11 +1353,126 @@ createVertexBuffer physicalDevice device vertices = do
     memPtr <-
       allocaAndPeek ( Vulkan.vkMapMemory device memory 0 sizeInBytes 0 >=> throwVkResult )
 
-    Foreign.Marshal.pokeArray ( Foreign.castPtr memPtr ) vertices
+    poke memPtr
 
     Vulkan.vkUnmapMemory device memory
 
   return buffer
 
 
-type Vertex = V2 ( V3 Foreign.C.CFloat )
+createDescriptorSetLayout
+  :: MonadManaged m => Vulkan.VkDevice -> m Vulkan.VkDescriptorSetLayout
+createDescriptorSetLayout device = do
+  let
+    binding =
+      Vulkan.createVk
+        (  Vulkan.set @"binding" 0
+        &* Vulkan.set @"descriptorType" Vulkan.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        &* Vulkan.set @"descriptorCount" 1
+        &* Vulkan.set @"stageFlags" Vulkan.VK_SHADER_STAGE_VERTEX_BIT
+        &* Vulkan.set @"pImmutableSamplers" Vulkan.VK_NULL
+        )
+
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"bindingCount" 1
+        &* Vulkan.setListRef @"pBindings" [ binding ]
+        )
+
+  managedVulkanResource
+    ( Vulkan.vkCreateDescriptorSetLayout
+        device
+        ( Vulkan.unsafePtr createInfo )
+    )
+    ( Vulkan.vkDestroyDescriptorSetLayout device )
+
+
+createDescriptorPool
+  :: MonadManaged m
+  => Vulkan.VkDevice -> m Vulkan.VkDescriptorPool
+createDescriptorPool device =
+  let
+    poolSize0 =
+      Vulkan.createVk
+        (  Vulkan.set @"type" Vulkan.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        &* Vulkan.set @"descriptorCount" 1
+        )
+
+    createInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"flags" 0
+        &* Vulkan.set @"poolSizeCount" 1
+        &* Vulkan.setListRef @"pPoolSizes" [ poolSize0 ]
+        &* Vulkan.set @"maxSets" 1
+        )
+
+  in
+  managedVulkanResource
+    ( Vulkan.vkCreateDescriptorPool device ( Vulkan.unsafePtr createInfo ) )
+    ( Vulkan.vkDestroyDescriptorPool device )
+
+
+allocateDescriptorSet
+  :: MonadManaged m
+  => Vulkan.VkDevice
+  -> Vulkan.VkDescriptorPool
+  -> Vulkan.VkDescriptorSetLayout
+  -> m Vulkan.VkDescriptorSet
+allocateDescriptorSet dev descriptorPool layout0 = do
+  let
+    allocateInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"descriptorPool" descriptorPool
+        &* Vulkan.set @"descriptorSetCount" 1
+        &* Vulkan.setListRef @"pSetLayouts" [ layout0 ]
+        )
+
+  manageBracket
+    ( allocaAndPeek
+        ( Vulkan.vkAllocateDescriptorSets
+            dev
+            ( Vulkan.unsafePtr allocateInfo )
+            >=> throwVkResult
+        )
+    )
+    ( \a ->
+        Foreign.Marshal.withArray [ a ]
+          ( Vulkan.vkFreeDescriptorSets dev descriptorPool 1 )
+    )
+
+
+updateDescriptorSet
+  :: MonadManaged m
+  => Vulkan.VkDevice -> Vulkan.VkDescriptorSet -> Vulkan.VkBuffer -> m ()
+updateDescriptorSet device descriptorSet buffer = do
+  let
+    bufferInfo =
+      Vulkan.createVk
+        (  Vulkan.set @"buffer" buffer
+        &* Vulkan.set @"offset" 0
+        &* Vulkan.set @"range" ( fromIntegral Vulkan.VK_WHOLE_SIZE )
+        )
+    writeUpdate0 =
+      Vulkan.createVk
+        (  Vulkan.set @"sType" Vulkan.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+        &* Vulkan.set @"pNext" Vulkan.VK_NULL
+        &* Vulkan.set @"dstSet" descriptorSet
+        &* Vulkan.set @"dstBinding" 0
+        &* Vulkan.set @"descriptorType" Vulkan.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        &* Vulkan.set @"pTexelBufferView" Vulkan.VK_NULL
+        &* Vulkan.set @"pImageInfo" Vulkan.VK_NULL
+        &* Vulkan.setListRef @"pBufferInfo" [ bufferInfo ]
+        &* Vulkan.set @"descriptorCount" 1
+        &* Vulkan.set @"dstArrayElement" 0
+        )
+
+  liftIO $
+    Foreign.Marshal.withArray [ writeUpdate0 ] $ \writeUpdatesPtr ->
+      Vulkan.vkUpdateDescriptorSets device 1 writeUpdatesPtr 0 Vulkan.vkNullPtr

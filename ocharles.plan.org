@@ -2,32 +2,46 @@
 
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
-* Today
+* Wednesday
+** [X] Introduce model/view/projection matrix via a uniform buffer :progress:
 
-** [X] Find out how to correctly use vulkan-loader :correctness:
+** [ ] Make use of the depth buffer :progress:
 
-It currently requires me to change =LD_LIBRARY_PATH= to contain
-vulkan-loader.so.
+** [ ] Use an index buffer :progress:
+
+** [ ] Add texturing :progress:
 
 ** [ ] Determine the presentation queue :correctness:
 
 ** [ ] Check for VK_KHR_SWAPCHAIN_EXTENSION_NAME :correctness:
 
-** [ ] Triple buffering
+** [ ] Triple buffering :correctness:
 
-** [ ] Frame fences to limit in flight frames
+** [ ] Frame fences to limit in flight frames :correctness:
 
-** [ ] Check that VK_KHR_swapchain is supported
+** [ ] Check that VK_KHR_swapchain is supported :correctness:
 
-** [ ] Use cabal2nix to generate Nix environment
+** [ ] Use cabal2nix to generate Nix environment :refactoring:
 
 ** [ ] Factor out the pattern of setting a list and the length at once :correctness:
 
-** [ ] Form a module structure
+** [ ] Form a module structure :refactoring:
+
+** [ ] Move logging from main to functions themselves :refactoring:
+
+
+* Sunday
+** [X] Find out how to correctly use vulkan-loader :correctness:
+
+It currently requires me to change =LD_LIBRARY_PATH= to contain
+vulkan-loader.so.
+
+** [X] Use vertex buffers
 
 
 * Friday
 ** [X] A DSL for building Vulkan structs :refactoring:
+
 ** [X] Resource cleanup :correctness:
 
 ** [X] Render a triangle! :progress:
@@ -35,8 +49,11 @@ vulkan-loader.so.
 
 * Thursday
 ** [X] Finish recording a render pass to the command buffer
+
 ** [X] Add the validation layer :correctness:
+
 ** [X] Submit the command buffer for rendering
+
 ** [X] We have a blue screen!
 
 
