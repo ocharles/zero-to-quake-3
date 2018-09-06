@@ -138,13 +138,20 @@ main = runManaged $ do
 
   let
     vertices =
-      [ V2 ( V3 0 1 (-5) ) ( V3 1 0 0 )
-      , V2 ( V3 1 0 (-5) ) ( V3 1 0 0 )
-      , V2 ( V3 (-1) 0 (-5) ) ( V3 1 0 0 )
+      [ V2 ( V3 (-1) 1 (-5) ) ( V3 1 0 0 )
+      , V2 ( V3 1 1 (-5) ) ( V3 1 0 0 )
+      , V2 ( V3 (-1) (-1) (-5) ) ( V3 1 0 0 )
+      , V2 ( V3 1 (-1) (-5) ) ( V3 1 0 0 )
       ]
+
+    indices =
+      [ 2, 3, 0, 3, 0, 1 ]
 
   vertexBuffer <-
     createVertexBuffer physicalDevice device vertices
+
+  indexBuffer <-
+    createIndexBuffer physicalDevice device indices
 
   uniformBuffer <-
     let
@@ -178,6 +185,13 @@ main = runManaged $ do
         Foreign.Marshal.withArray [ 0 ] $ \offsets ->
         Vulkan.vkCmdBindVertexBuffers commandBuffer 0 1 buffers offsets
 
+      liftIO $
+        Vulkan.vkCmdBindIndexBuffer
+          commandBuffer
+          indexBuffer
+          0
+          Vulkan.VK_INDEX_TYPE_UINT32
+
       recordRenderPass commandBuffer renderPass framebuffer extent
 
       liftIO $ do
@@ -197,10 +211,11 @@ main = runManaged $ do
             0
             Vulkan.vkNullPtr
 
-        Vulkan.vkCmdDraw
+        Vulkan.vkCmdDrawIndexed
           commandBuffer
-          ( fromIntegral ( length vertices ) )
+          ( fromIntegral ( length indices ) )
           1
+          0
           0
           0
 
@@ -1225,13 +1240,36 @@ createVertexBuffer
   -> Vulkan.VkDevice
   -> [ Vertex ]
   -> m Vulkan.VkBuffer
-createVertexBuffer physicalDevice device vertices =
+createVertexBuffer =
+  createBufferFromList
+    Vulkan.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+
+
+createIndexBuffer
+  :: MonadManaged m
+  => Vulkan.VkPhysicalDevice
+  -> Vulkan.VkDevice
+  -> [ Foreign.Word32 ]
+  -> m Vulkan.VkBuffer
+createIndexBuffer =
+  createBufferFromList
+    Vulkan.VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+
+
+createBufferFromList
+  :: ( MonadManaged m, Foreign.Storable a )
+  => Vulkan.VkBufferUsageBitmask Vulkan.FlagMask
+  -> Vulkan.VkPhysicalDevice
+  -> Vulkan.VkDevice
+  -> [ a ]
+  -> m Vulkan.VkBuffer
+createBufferFromList usage physicalDevice device elems =
   createBuffer
     device
     physicalDevice
-    Vulkan.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-    ( \memPtr -> Foreign.Marshal.pokeArray ( Foreign.castPtr memPtr ) vertices )
-    ( fromIntegral ( length vertices * Foreign.sizeOf ( head vertices ) ) )
+    usage
+    ( \memPtr -> Foreign.Marshal.pokeArray ( Foreign.castPtr memPtr ) elems )
+    ( fromIntegral ( length elems * Foreign.sizeOf ( head elems ) ) )
 
 
 createUniformBuffer
