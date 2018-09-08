@@ -24,6 +24,9 @@ eventPayloadToAction = \case
   SDL.Event.KeyboardEvent e ->
     keyboardEventToAction e
 
+  SDL.Event.MouseMotionEvent e ->
+    mouseMotionEventToAction e
+
   _ ->
     mempty
 
@@ -49,6 +52,17 @@ keyboardEventToAction SDL.Event.KeyboardEventData{..} | keyboardEventKeyMotion =
               _ ->
                 0
           )
+    , rotate =
+        mempty
     }
 keyboardEventToAction _ =
   mempty
+
+
+mouseMotionEventToAction :: SDL.MouseMotionEventData -> Quake3.Model.Action
+mouseMotionEventToAction SDL.MouseMotionEventData{..} =
+  Quake3.Model.Action
+    { impulse = mempty
+    , rotate =
+        pure ( fmap ( ( / 100 ) . fromIntegral ) mouseMotionEventRelMotion )
+    }

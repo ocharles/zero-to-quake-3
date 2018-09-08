@@ -72,6 +72,9 @@ withQuake3Context action = do
     logMsg "Creating SDL window"
       *> createWindow
 
+  _ <-
+    SDL.setMouseLocationMode SDL.RelativeLocation
+
   neededExtensions <-
     logMsg "Loading needed extensions"
       *> getNeededExtensions window

@@ -106,7 +106,7 @@ initResources Context{..} = do
     createIndexBuffer physicalDevice device indices
 
   uniformBuffer <-
-    createUniformBuffer physicalDevice device ( modelViewProjection 0 )
+    createUniformBuffer physicalDevice device ( modelViewProjection 0 0 )
 
   updateDescriptorSet device descriptorSet uniformBuffer
 
@@ -149,17 +149,29 @@ updateFromModel
 updateFromModel Resources{..} Quake3.Model.Quake3State{..} =
   pokeBuffer
     ( coerce uniformBuffer )
-    ( modelViewProjection cameraPosition )
+    ( modelViewProjection cameraPosition cameraAngles )
 
 
-modelViewProjection :: V3 Foreign.C.CFloat -> M44 Foreign.C.CFloat
-modelViewProjection cameraPosition =
+modelViewProjection
+  :: V3 Foreign.C.CFloat
+  -> V2 Foreign.C.CFloat
+  -> M44 Foreign.C.CFloat
+modelViewProjection cameraPosition ( V2 x y ) =
   let
     view =
-      lookAt
-        cameraPosition
-        ( cameraPosition ^+^ V3 0 0 (-1) )
-        ( V3 0 1 0 )
+      let
+        orientation =
+          Quaternion.axisAngle ( V3 0 1 0 ) x
+            * Quaternion.axisAngle ( V3 1 0 0 ) y
+
+        forward =
+          Quaternion.rotate orientation ( V3 0 0 (-1) )
+
+        up =
+          Quaternion.rotate orientation ( V3 0 1 0 )
+
+      in
+      lookAt cameraPosition ( cameraPosition ^+^ forward ) up
 
     model =
       let
