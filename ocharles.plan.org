@@ -2,13 +2,12 @@
 
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
-* Wednesday
-** [X] Introduce model/view/projection matrix via a uniform buffer :progress:
+* <2018-09-08 Sat>
+** [X] Form a module structure :refactoring:
 
-** [ ] Make use of the depth buffer :progress:
+** [ ] Fix on-termination errors :correctness:
 
-** [ ] Use an index buffer :progress:
-
+** [ ] Correctly determine the format of the depth buffer :correctness:
 ** [ ] Add texturing :progress:
 
 ** [ ] Determine the presentation queue :correctness:
@@ -25,9 +24,18 @@ Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 ** [ ] Factor out the pattern of setting a list and the length at once :correctness:
 
-** [ ] Form a module structure :refactoring:
-
 ** [ ] Move logging from main to functions themselves :refactoring:
+
+
+
+* Thursday
+** [X] Use an index buffer :progress:
+
+** [X] Make use of the depth buffer :progress:
+
+
+* Wednesday
+** [X] Introduce model/view/projection matrix via a uniform buffer :progress:
 
 
 * Sunday
