@@ -14,10 +14,10 @@ import qualified Graphics.Vulkan as Vulkan
 import qualified Graphics.Vulkan.Core_1_0 as Vulkan
 
 -- zero-to-quake-3
-import Vulkan.Buffer ( createBuffer )
+import Vulkan.Buffer ( Buffer, createBuffer )
 
 
-newtype UniformBuffer = UniformBuffer Vulkan.VkBuffer
+newtype UniformBuffer = UniformBuffer Buffer
 
 
 createUniformBuffer

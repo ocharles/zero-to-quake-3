@@ -13,11 +13,11 @@ import qualified Graphics.Vulkan as Vulkan
 import qualified Graphics.Vulkan.Core_1_0 as Vulkan
 
 -- zero-to-quake-3
-import Vulkan.Buffer ( createBufferFromList )
+import Vulkan.Buffer ( Buffer(buffer), createBufferFromList )
 import Quake3.Vertex ( Vertex ) -- TODO Remove coupling
 
 
-newtype VertexBuffer = VertexBuffer Vulkan.VkBuffer
+newtype VertexBuffer = VertexBuffer Buffer
 
 
 createVertexBuffer
@@ -44,7 +44,7 @@ bindVertexBuffers
   -> m ()
 bindVertexBuffers commandBuffer vertexBuffers =
   liftIO $
-    Foreign.Marshal.withArray ( coerce vertexBuffers ) $ \buffers ->
+    Foreign.Marshal.withArray ( map ( buffer . coerce ) vertexBuffers ) $ \buffers ->
     Foreign.Marshal.withArray ( 0 <$ vertexBuffers ) $ \offsets ->
     Vulkan.vkCmdBindVertexBuffers
       commandBuffer

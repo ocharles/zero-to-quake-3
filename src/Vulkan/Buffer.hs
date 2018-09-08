@@ -1,11 +1,17 @@
 {-# language DataKinds #-}
+{-# language RecordWildCards #-}
 {-# language TypeApplications #-}
 
-module Vulkan.Buffer ( createBuffer, createBufferFromList ) where
+module Vulkan.Buffer
+  ( Buffer(..)
+  , createBuffer
+  , createBufferFromList
+  , pokeBuffer
+  ) where
 
 -- base
 import Control.Monad ( (>=>) )
-import Control.Monad.IO.Class ( liftIO )
+import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Foreign
 import qualified Foreign.Marshal
 
@@ -24,13 +30,20 @@ import Foreign.Vulkan ( managedVulkanResource, throwVkResult )
 import Vulkan.Memory ( allocateMemoryFor )
 
 
+data Buffer = Buffer
+  { buffer :: Vulkan.VkBuffer
+  , device :: Vulkan.VkDevice
+  , memory :: Vulkan.VkDeviceMemory
+  }
+
+
 createBufferFromList
   :: ( MonadManaged m, Foreign.Storable a )
   => Vulkan.VkBufferUsageBitmask Vulkan.FlagMask
   -> Vulkan.VkPhysicalDevice
   -> Vulkan.VkDevice
   -> [ a ]
-  -> m Vulkan.VkBuffer
+  -> m Buffer
 createBufferFromList usage physicalDevice device elems =
   createBuffer
     device
@@ -47,7 +60,7 @@ createBuffer
   -> Vulkan.VkBufferUsageBitmask Vulkan.FlagMask
   -> (Vulkan.Ptr Vulkan.Void -> IO ())
   -> Vulkan.VkDeviceSize
-  -> m Vulkan.VkBuffer
+  -> m Buffer
 createBuffer device physicalDevice usage poke sizeInBytes = do
   let
     createInfo =
@@ -74,15 +87,40 @@ createBuffer device physicalDevice usage poke sizeInBytes = do
   memory <-
     allocateMemoryFor physicalDevice device requirements
 
-  liftIO $ do
-    Vulkan.vkBindBufferMemory device buffer memory 0
-      >>= throwVkResult
+  liftIO
+    ( Vulkan.vkBindBufferMemory device buffer memory 0
+        >>= throwVkResult
+    )
 
+  let
+    res =
+      Buffer {..}
+
+  pokeBufferWith poke sizeInBytes res
+
+  return res
+
+
+pokeBuffer
+  :: ( Foreign.Storable a, MonadIO m )
+  => Buffer -> a -> m ()
+pokeBuffer buffer contents =
+  pokeBufferWith
+    ( \ptr -> Foreign.poke ( Foreign.castPtr ptr ) contents )
+    ( fromIntegral ( Foreign.sizeOf contents ) )
+    buffer
+
+pokeBufferWith
+  :: MonadIO m
+  => ( Vulkan.Ptr Vulkan.Void -> IO () )
+  -> Vulkan.VkDeviceSize
+  -> Buffer
+  -> m ()
+pokeBufferWith poke sizeInBytes Buffer {..} =
+  liftIO $ do
     memPtr <-
       allocaAndPeek ( Vulkan.vkMapMemory device memory 0 sizeInBytes 0 >=> throwVkResult )
 
     poke memPtr
 
     Vulkan.vkUnmapMemory device memory
-
-  return buffer

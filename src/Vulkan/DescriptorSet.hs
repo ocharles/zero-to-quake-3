@@ -28,6 +28,7 @@ import qualified Graphics.Vulkan.Marshal.Create as Vulkan
 import Control.Monad.Managed.Extra ( manageBracket )
 import Foreign.Marshal.Extra ( allocaAndPeek )
 import Foreign.Vulkan ( managedVulkanResource, throwVkResult )
+import qualified Vulkan.Buffer
 import Vulkan.Buffer.UniformBuffer ( UniformBuffer(..) )
 
 
@@ -129,7 +130,7 @@ updateDescriptorSet device descriptorSet buffer = do
   let
     bufferInfo =
       Vulkan.createVk
-        (  Vulkan.set @"buffer" ( coerce buffer )
+        (  Vulkan.set @"buffer" ( Vulkan.Buffer.buffer ( coerce buffer ) )
         &* Vulkan.set @"offset" 0
         &* Vulkan.set @"range" ( fromIntegral Vulkan.VK_WHOLE_SIZE )
         )

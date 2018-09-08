@@ -22,7 +22,7 @@ let
     haskellPackages.ghcWithHoogle
       ( hs:
         with hs;
-        [ managed sdl2 vulkan-api ]
+        [ managed sdl2 unliftio vulkan-api ]
       );
 
 in

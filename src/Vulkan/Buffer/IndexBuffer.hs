@@ -17,10 +17,10 @@ import qualified Graphics.Vulkan as Vulkan
 import qualified Graphics.Vulkan.Core_1_0 as Vulkan
 
 -- zero-to-quake-3
-import Vulkan.Buffer ( createBufferFromList )
+import Vulkan.Buffer ( Buffer(buffer), createBufferFromList )
 
 
-newtype IndexBuffer = IndexBuffer Vulkan.VkBuffer
+newtype IndexBuffer = IndexBuffer Buffer
 
 createIndexBuffer
   :: MonadManaged m
@@ -44,6 +44,6 @@ bindIndexBuffer commandBuffer indexBuffer =
   liftIO $
     Vulkan.vkCmdBindIndexBuffer
       commandBuffer
-      ( coerce indexBuffer )
+      ( buffer ( coerce indexBuffer ) )
       0
       Vulkan.VK_INDEX_TYPE_UINT32

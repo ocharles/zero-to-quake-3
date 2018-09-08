@@ -21,6 +21,9 @@ executable zero-to-quake3
     Control.Monad.Managed.Extra
     Foreign.Marshal.Extra
     Foreign.Vulkan
+    Quake3.Context
+    Quake3.Model
+    Quake3.Render
     Quake3.Vertex
     Vulkan.Buffer
     Vulkan.Buffer.IndexBuffer
@@ -48,6 +51,7 @@ executable zero-to-quake3
                      , bytestring
                      , linear
                      , lens
+                     , unliftio
   extra-libraries: vulkan
   hs-source-dirs:      src
   default-language:    Haskell2010
