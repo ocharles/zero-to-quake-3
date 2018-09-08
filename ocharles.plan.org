@@ -4,7 +4,7 @@ Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 * <2018-09-08 Sat>
 ** [X] Form a module structure :refactoring:
-
+** [X] Add a first person camera :progress:
 ** [ ] Fix on-termination errors :correctness:
 
 ** [ ] Correctly determine the format of the depth buffer :correctness:
