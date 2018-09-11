@@ -8,10 +8,13 @@ module Quake3.Render
   ) where
 
 -- base
+import Control.Monad ( when )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Coerce ( coerce )
+import Data.Foldable ( for_ )
 import Data.Word ( Word32 )
 import qualified Foreign.C
+import qualified Data.ByteString.Lazy
 
 -- lens
 import Control.Lens ( (.~), (&) )
@@ -46,6 +49,7 @@ import qualified Graphics.Vulkan.Ext.VK_KHR_surface as Vulkan ()
 import qualified Graphics.Vulkan.Ext.VK_KHR_swapchain as Vulkan ()
 
 -- zero-to-quake-3
+import Quake3.BSP
 import Quake3.Context ( Context(..) )
 import qualified Quake3.Model
 import Vulkan.Buffer ( pokeBuffer )
@@ -76,34 +80,20 @@ data Resources = Resources
   { vertexBuffer :: VertexBuffer
   , indexBuffer :: IndexBuffer
   , uniformBuffer :: UniformBuffer
-  , indices :: [ Word32 ]
+  , q3dm1 :: BSP
   }
 
 
 initResources :: MonadManaged m => Context -> m Resources
 initResources Context{..} = do
-  let
-    vertices =
-      [ V2 ( V3 (-1) 1 1 ) ( V3 1 0 0 )
-      , V2 ( V3 1 1 1 ) ( V3 1 0 0 )
-      , V2 ( V3 (-1) (-1) 1 ) ( V3 1 0 0 )
-      , V2 ( V3 1 (-1) 1 ) ( V3 1 0 0 )
-      , V2 ( V3 (-1) 1 (-1) ) ( V3 0 1 0 )
-      , V2 ( V3 1 1 (-1) ) ( V3 0 1 0 )
-      , V2 ( V3 (-1) (-1) (-1) ) ( V3 0 1 0 )
-      , V2 ( V3 1 (-1) (-1) ) ( V3 0 1 0 )
-      ]
-
-    indices =
-      [ 2, 3, 0, 3, 0, 1
-      , 6, 7, 4, 7, 4, 5
-      ]
+  q3dm1 <-
+    loadBSP "q3dm3.bsp"
 
   vertexBuffer <-
-    createVertexBuffer physicalDevice device vertices
+    createVertexBuffer physicalDevice device ( bspVertices q3dm1 )
 
   indexBuffer <-
-    createIndexBuffer physicalDevice device indices
+    createIndexBuffer physicalDevice device ( bspMeshVerts q3dm1 )
 
   uniformBuffer <-
     createUniformBuffer physicalDevice device ( modelViewProjection 0 0 )
@@ -131,13 +121,15 @@ renderToFrameBuffer Context{..} Resources{..} framebuffer = do
       bindDescriptorSets commandBuffer pipelineLayout [ descriptorSet ]
 
       liftIO
-        ( Vulkan.vkCmdDrawIndexed
-            commandBuffer
-            ( fromIntegral ( length indices ) )
-            1
-            0
-            0
-            0
+        ( for_ ( bspFaces q3dm1 ) $ \face ->
+            when ( faceType face == 1 ) $
+              Vulkan.vkCmdDrawIndexed
+                commandBuffer
+                ( fromIntegral ( faceNMeshVerts face ) ) -- ( fromIntegral nIndices )
+                1
+                ( fromIntegral ( faceMeshVert face ) )
+                ( fromIntegral ( faceVertex face ) )
+                0
         )
 
   return commandBuffer
@@ -188,7 +180,7 @@ modelViewProjection cameraPosition ( V2 x y ) =
       translate !*! rotate
 
     projection =
-      perspective ( pi / 2 ) ( 4 / 3 ) 0.1 100
+      perspective ( pi / 2 ) ( 4 / 3 ) 0.1 100000
 
   in
   transpose ( projection !*! view !*! model )

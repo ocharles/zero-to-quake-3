@@ -38,7 +38,7 @@ keyboardEventToAction SDL.Event.KeyboardEventData{..} | keyboardEventKeyMotion =
         pure
           ( case SDL.keysymScancode keyboardEventKeysym of
               SDL.ScancodeW ->
-                V3 0 0 (-0.1)
+                V3 0 0 (-10)
 
               SDL.ScancodeS ->
                 V3 0 0 0.1
@@ -47,7 +47,7 @@ keyboardEventToAction SDL.Event.KeyboardEventData{..} | keyboardEventKeyMotion =
                 V3 (-0.1) 0 0
 
               SDL.ScancodeD ->
-                V3 0.1 0 0
+                V3 10 0 0
 
               _ ->
                 0

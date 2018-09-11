@@ -124,8 +124,24 @@ createPipeline device renderPass extent layout0 = do
       Vulkan.createVk
         (  Vulkan.set @"location" 1
         &* Vulkan.set @"binding" 0
-        &* Vulkan.set @"format" Vulkan.VK_FORMAT_R32G32B32_SFLOAT
-        &* Vulkan.set @"offset" ( fromIntegral ( Foreign.sizeOf ( undefined :: V3 Foreign.C.CFloat ) ) )
+        &* Vulkan.set @"format" Vulkan.VK_FORMAT_R8G8B8A8_UINT
+        &* Vulkan.set
+             @"offset"
+             ( fromIntegral
+                 ( let
+                     v :: Vertex
+                     v =
+                       undefined
+
+                   in
+                   sum
+                     [ Foreign.sizeOf ( vPos v )
+                     , Foreign.sizeOf ( vSurfaceUV v )
+                     , Foreign.sizeOf ( vLightmapUV v )
+                     , Foreign.sizeOf ( vNormal v )
+                     ]
+                 )
+             )
         )
 
     vertexInputState =

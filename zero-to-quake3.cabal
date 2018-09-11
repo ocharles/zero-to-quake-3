@@ -21,6 +21,7 @@ executable zero-to-quake3
     Control.Monad.Managed.Extra
     Foreign.Marshal.Extra
     Foreign.Vulkan
+    Quake3.BSP
     Quake3.Context
     Quake3.Input
     Quake3.Model
@@ -52,6 +53,7 @@ executable zero-to-quake3
                      , bytestring
                      , linear
                      , lens
+                     , binary
                      , unliftio
                      , generic-deriving
   extra-libraries: vulkan
