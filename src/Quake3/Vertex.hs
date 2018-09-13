@@ -1,14 +1,21 @@
 {-# language RecordWildCards #-}
 
-module Quake3.Vertex ( Vertex(..) ) where
+module Quake3.Vertex ( vertexFormat ) where
 
 -- base
 import Data.Word ( Word8 )
-import qualified Foreign
 import qualified Foreign.C
+
+-- contravarient
+import Data.Functor.Contravariant
+import Data.Functor.Contravariant.Divisible ( Divisible, divided )
 
 -- linear
 import Linear
+
+-- zero-to-quake3
+import Vulkan.VertexFormat
+
 
 data Vertex = Vertex
   { vPos :: V3 Foreign.C.CFloat
@@ -18,13 +25,22 @@ data Vertex = Vertex
   , vColor :: V4 Word8
   }
 
+vertexFormat :: VertexFormat Vertex
+vertexFormat =
+  vertex
+    >$< v3_32sfloat
+    >*< v2_32sfloat
+    >*< v2_32sfloat
+    >*< v3_32sfloat
+    >*< v4_8uint
 
-instance Foreign.Storable Vertex where
-  sizeOf ~Vertex{..} =
-    sum
-      [ Foreign.sizeOf vPos
-      , Foreign.sizeOf vSurfaceUV
-      , Foreign.sizeOf vLightmapUV
-      , Foreign.sizeOf vNormal
-      , Foreign.sizeOf vColor
-      ]
+  where
+
+    vertex Vertex{..} =
+      ( vPos, ( vSurfaceUV, ( vLightmapUV, ( vNormal, vColor ) ) ) )
+
+
+(>*<) :: Divisible f => f a -> f b -> f (a, b)
+(>*<) = divided
+
+infixr 5 >*<

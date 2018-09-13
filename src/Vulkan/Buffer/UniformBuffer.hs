@@ -3,9 +3,6 @@ module Vulkan.Buffer.UniformBuffer
   , createUniformBuffer
   ) where
 
--- base
-import qualified Foreign
-
 -- managed
 import Control.Monad.Managed ( MonadManaged )
 
@@ -15,24 +12,26 @@ import qualified Graphics.Vulkan.Core_1_0 as Vulkan
 
 -- zero-to-quake-3
 import Vulkan.Buffer ( Buffer, createBuffer )
+import Vulkan.Poke ( Poke )
 
 
-newtype UniformBuffer = UniformBuffer Buffer
+newtype UniformBuffer a = UniformBuffer { unUniformBuffer :: Buffer a }
 
 
 createUniformBuffer
-  :: ( MonadManaged m, Foreign.Storable a )
+  :: MonadManaged m
   => Vulkan.VkPhysicalDevice
   -> Vulkan.VkDevice
+  -> Poke a
   -> a
-  -> m UniformBuffer
-createUniformBuffer physicalDevice device bufferData =
+  -> m ( UniformBuffer a )
+createUniformBuffer physicalDevice device poke bufferData =
   fmap
     UniformBuffer
     ( createBuffer
         device
         physicalDevice
         Vulkan.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
-        ( \memPtr -> Foreign.poke ( Foreign.castPtr memPtr ) bufferData )
-        ( fromIntegral ( Foreign.sizeOf bufferData ) )
+        poke
+        bufferData
     )

@@ -10,7 +10,6 @@ module Vulkan.DescriptorSet
   ) where
 
 -- base
-import Data.Coerce ( coerce )
 import Control.Monad ( (>=>) )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Foreign.Marshal
@@ -124,13 +123,13 @@ updateDescriptorSet
   :: MonadManaged m
   => Vulkan.VkDevice
   -> Vulkan.VkDescriptorSet
-  -> UniformBuffer
+  -> UniformBuffer a
   -> m ()
 updateDescriptorSet device descriptorSet buffer = do
   let
     bufferInfo =
       Vulkan.createVk
-        (  Vulkan.set @"buffer" ( Vulkan.Buffer.buffer ( coerce buffer ) )
+        (  Vulkan.set @"buffer" ( Vulkan.Buffer.buffer ( unUniformBuffer buffer ) )
         &* Vulkan.set @"offset" 0
         &* Vulkan.set @"range" ( fromIntegral Vulkan.VK_WHOLE_SIZE )
         )

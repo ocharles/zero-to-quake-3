@@ -4,11 +4,11 @@
 module Quake3.BSP ( BSP(..), Face(..), MeshVertList(..), VertexList(..), loadBSP ) where
 
 -- base
-import Debug.Trace
 import Control.Applicative ( liftA2, liftA3 )
-import Control.Monad ( guard, replicateM, unless )
+import Control.Monad ( guard, replicateM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Char ( ord )
+import Data.Foldable ( traverse_ )
 import Data.Int ( Int32 )
 
 -- binary
@@ -16,7 +16,6 @@ import qualified Data.Binary.Get
 
 -- bytestring
 import qualified Data.ByteString.Lazy
-import qualified Data.ByteString.Lazy.Char8
 
 
 data DirEntry = DirEntry
@@ -81,7 +80,7 @@ getBSP = do
     , _lightvols
     , _visdata
     ] <- do
-    traverse
+    traverse_
       ( \c -> Data.Binary.Get.getWord8 >>= guard . ( fromIntegral c == ) )
       ( map ord "IBSP" )
 

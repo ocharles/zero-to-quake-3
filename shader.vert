@@ -7,9 +7,11 @@ out gl_PerVertex {
 
 layout(location = 0) out vec3 fragColor;
 
+layout(location = 1) out vec2 uv;
+
 layout(location = 0) in vec3 position;
 
-layout(location = 1) in uvec4 color;
+layout(location = 4) in uvec4 color;
 
 layout(binding = 0) uniform UniformBufferObject {
     mat4 mvp;

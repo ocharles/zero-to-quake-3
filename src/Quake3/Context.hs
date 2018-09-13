@@ -23,6 +23,7 @@ import qualified Graphics.Vulkan.Core_1_0 as Vulkan
 
 -- zero-to-quake-3
 import Control.Monad.Managed.Extra ( manageBracket )
+import qualified Quake3.Vertex
 import Vulkan.CommandPool ( createCommandPool )
 import Vulkan.DescriptorSet
   ( allocateDescriptorSet
@@ -34,7 +35,7 @@ import Vulkan.Framebuffer ( createFramebuffer )
 import Vulkan.Image ( createDepthImage )
 import Vulkan.ImageView ( createImageView )
 import Vulkan.Instance ( createVulkanInstance )
-import Vulkan.PhysicalDevice ( createPhysicalDevice, findQueueFamilyIndex )
+import Vulkan.PhysicalDevice ( createPhysicalDevice, findOptimalDepthFormat, findQueueFamilyIndex )
 import Vulkan.Pipeline ( createPipeline )
 import Vulkan.RenderPass ( createRenderPass )
 import Vulkan.Semaphore ( createSemaphore )
@@ -117,9 +118,8 @@ withQuake3Context action = do
     logMsg "Getting swapchain images"
       *> getSwapchainImages device swapchain
 
-  let
-    depthFormat =
-      Vulkan.VK_FORMAT_D16_UNORM
+  depthFormat <-
+    findOptimalDepthFormat physicalDevice
 
   renderPass <-
     logMsg "Creating a render pass"
@@ -130,10 +130,12 @@ withQuake3Context action = do
 
     for images $ \image -> do
       imageView <-
-        createImageView device image format Vulkan.VK_IMAGE_ASPECT_COLOR_BIT
+        logMsg "Creating color image view"
+          *> createImageView device image format Vulkan.VK_IMAGE_ASPECT_COLOR_BIT
 
       depthImage <-
-        createDepthImage physicalDevice device depthFormat extent
+        logMsg "Creating depth image"
+          *> createDepthImage physicalDevice device depthFormat extent
 
       depthImageView <-
         createImageView device depthImage depthFormat Vulkan.VK_IMAGE_ASPECT_DEPTH_BIT
@@ -163,7 +165,12 @@ withQuake3Context action = do
     allocateDescriptorSet device descriptorPool descriptorSetLayout
 
   ( graphicsPipeline, pipelineLayout ) <-
-    createPipeline device renderPass extent descriptorSetLayout
+    createPipeline
+      device
+      renderPass
+      extent
+      descriptorSetLayout
+      Quake3.Vertex.vertexFormat
 
   action Context {..}
 

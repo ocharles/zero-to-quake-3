@@ -1,8 +1,12 @@
 {-# language DataKinds #-}
+{-# language FlexibleContexts #-}
+{-# language NoMonomorphismRestriction #-}
 {-# language TypeApplications #-}
+{-# language TypeFamilies #-}
 
 module Vulkan.PhysicalDevice
   ( createPhysicalDevice
+  , findOptimalDepthFormat
   , findQueueFamilyIndex
   ) where
 
@@ -86,3 +90,38 @@ findQueueFamilyIndex physicalDevice = liftIO $ do
 
     ( i : _ ) ->
       return i
+
+
+findOptimalDepthFormat
+  :: MonadIO m
+  => Vulkan.VkPhysicalDevice -> m Vulkan.VkFormat
+findOptimalDepthFormat physicalDevice =
+  findBest
+    [ Vulkan.VK_FORMAT_D32_SFLOAT
+    , Vulkan.VK_FORMAT_D32_SFLOAT_S8_UINT
+    , Vulkan.VK_FORMAT_D24_UNORM_S8_UINT
+    ]
+
+  where
+
+    findBest [] =
+      fail "Could not find a valid depth format"
+
+    findBest ( x : xs ) = do
+      properties <-
+        allocaAndPeek
+          ( Vulkan.vkGetPhysicalDeviceFormatProperties physicalDevice x )
+
+      if supportsDepthAttachment properties
+        then return x
+        else findBest xs
+
+    supportsDepthAttachment :: Vulkan.VkFormatProperties -> Bool
+    supportsDepthAttachment props =
+      testBitmask
+        ( Vulkan.getField @"optimalTilingFeatures" props )
+        Vulkan.VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+
+    testBitmask bitmask featureFlag =
+      bitmask .&. featureFlag > 0
+

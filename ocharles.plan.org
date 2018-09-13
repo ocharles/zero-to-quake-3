@@ -2,12 +2,9 @@
 
 Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
-* <2018-09-08 Sat>
-** [X] Form a module structure :refactoring:
-** [X] Add a first person camera :progress:
+* Todo
 ** [ ] Fix on-termination errors :correctness:
 
-** [ ] Correctly determine the format of the depth buffer :correctness:
 ** [ ] Add texturing :progress:
 
 ** [ ] Determine the presentation queue :correctness:
@@ -22,10 +19,24 @@ Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 ** [ ] Use cabal2nix to generate Nix environment :refactoring:
 
-** [ ] Factor out the pattern of setting a list and the length at once :correctness:
-
 ** [ ] Move logging from main to functions themselves :refactoring:
 
+** [ ] Better input handling :correctness:
+* <2018-09-13 Thu>
+
+** [X] Remove accidental rotation of the world :bugs:
+** [X] Use the Vulkan correction matrix :correctness:
+
+** [X] Weird z-fighting :bugs:
+
+** [X] Correctly determine the format of the depth buffer :correctness:
+** [X] Remove Quake3.Vertex coupling from Vulkan.* modules
+
+* <2018-09-11 Tue>
+** [X] BSP Loading :progress:
+* <2018-09-08 Sat>
+** [X] Form a module structure :refactoring:
+** [X] Add a first person camera :progress:
 
 
 * Thursday

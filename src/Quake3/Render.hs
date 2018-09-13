@@ -12,25 +12,22 @@ import Control.Monad ( when )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Coerce ( coerce )
 import Data.Foldable ( for_ )
-import Data.Word ( Word32 )
 import qualified Foreign.C
-import qualified Data.ByteString.Lazy
 
--- lens
-import Control.Lens ( (.~), (&) )
+-- contravariant
+import Data.Functor.Contravariant
 
 -- linear
 import Linear
   ( (!*!)
   , (^+^)
-  , identity
   , lookAt
   , perspective
-  , translation
   , transpose
   , M44
   , V2(..)
   , V3(..)
+  , V4(..)
   )
 import qualified Linear.Matrix as Matrix
 import qualified Linear.Quaternion as Quaternion
@@ -73,13 +70,14 @@ import Vulkan.DescriptorSet
   , updateDescriptorSet
   )
 import Vulkan.Pipeline ( bindPipeline )
+import qualified Vulkan.Poke
 import Vulkan.RenderPass ( withRenderPass )
 
 
 data Resources = Resources
-  { vertexBuffer :: VertexBuffer
-  , indexBuffer :: IndexBuffer
-  , uniformBuffer :: UniformBuffer
+  { vertexBuffer :: VertexBuffer VertexList
+  , indexBuffer :: IndexBuffer MeshVertList
+  , uniformBuffer :: UniformBuffer ( M44 Foreign.C.CFloat )
   , q3dm1 :: BSP
   }
 
@@ -87,16 +85,28 @@ data Resources = Resources
 initResources :: MonadManaged m => Context -> m Resources
 initResources Context{..} = do
   q3dm1 <-
-    loadBSP "q3dm3.bsp"
+    loadBSP "q3dm1.bsp"
 
   vertexBuffer <-
-    createVertexBuffer physicalDevice device ( bspVertices q3dm1 )
+    createVertexBuffer
+      physicalDevice
+      device
+      ( contramap vertexListBytes Vulkan.Poke.pokeLazyBytestring )
+      ( bspVertices q3dm1 )
 
   indexBuffer <-
-    createIndexBuffer physicalDevice device ( bspMeshVerts q3dm1 )
+    createIndexBuffer
+      physicalDevice
+      device
+      ( contramap meshVertListBytes Vulkan.Poke.pokeLazyBytestring )
+      ( bspMeshVerts q3dm1 )
 
   uniformBuffer <-
-    createUniformBuffer physicalDevice device ( modelViewProjection 0 0 )
+    createUniformBuffer
+      physicalDevice
+      device
+      Vulkan.Poke.storable
+      ( modelViewProjection 0 0 )
 
   updateDescriptorSet device descriptorSet uniformBuffer
 
@@ -166,21 +176,17 @@ modelViewProjection cameraPosition ( V2 x y ) =
       lookAt cameraPosition ( cameraPosition ^+^ forward ) up
 
     model =
-      let
-        rotate =
-          Matrix.m33_to_m44
-            ( Matrix.fromQuaternion
-                ( Quaternion.axisAngle ( V3 1 1 1 )  ( pi / 5 ) )
-            )
-
-        translate =
-          identity & translation .~ V3 0 0 (-5)
-
-      in
-      translate !*! rotate
+      Matrix.identity
 
     projection =
-      perspective ( pi / 2 ) ( 4 / 3 ) 0.1 100000
+      perspective ( pi / 2 ) ( 4 / 3 ) 0.1 10000
+
+    correction =
+      V4
+        ( V4 1 0    0     0     )
+        ( V4 0 (-1) 0     0     )
+        ( V4 0 0    (1/2) (1/2) )
+        ( V4 0 0    0     1     )
 
   in
-  transpose ( projection !*! view !*! model )
+  transpose ( correction !*! projection !*! view !*! model )

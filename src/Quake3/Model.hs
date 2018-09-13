@@ -9,7 +9,6 @@ module Quake3.Model
   ) where
 
 -- base
-import Control.Applicative ( liftA2 )
 import Data.Monoid ( Sum(..) )
 import qualified Foreign.C
 import GHC.Generics ( Generic )
@@ -54,7 +53,7 @@ step Quake3State{..} Action{..} =
     { cameraPosition =
         cameraPosition + Quaternion.rotate orientation ( getSum impulse )
     , cameraAngles =
-        cameraAngles + liftA2 (*) ( getSum rotate ) ( V2 (-1) 1 )
+        cameraAngles - getSum rotate
     }
 
 
