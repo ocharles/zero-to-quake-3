@@ -3,14 +3,19 @@
 module Main ( main ) where
 
 -- base
-import Control.Monad ( forever )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
+import Data.Foldable ( traverse_ )
 
 -- managed
 import Control.Monad.Managed ( runManaged )
 
+-- reactive-banana
+import Control.Event.Handler
+import Reactive.Banana
+import Reactive.Banana.Frameworks
+
 -- unliftio
-import UnliftIO.IORef ( IORef, newIORef, readIORef, writeIORef )
+import UnliftIO.IORef ( IORef, newIORef, readIORef )
 
 -- sdl
 import qualified SDL
@@ -47,46 +52,101 @@ main =
             ( Quake3.Render.renderToFrameBuffer context resources )
             framebuffers
 
-        stateRef <-
-          newIORef Quake3.Model.initial
+        isRunning <-
+          newIORef True
 
-        forever ( frame context resources commandBuffers stateRef )
+        ( io, game ) <-
+          newGame resources
+
+        liftIO ( compile game >>= actuate )
+
+        tick context commandBuffers isRunning io
 
 
-frame
+data InputOutput = InputOutput
+  { onActionHandler :: Handler Quake3.Model.Action
+  , onRenderHandler :: Handler ()
+  , onPhysicsStepHandler :: Handler Double
+  }
+
+
+newGame :: MonadIO m => Quake3.Render.Resources -> m ( InputOutput, MomentIO () )
+newGame resources = do
+  ( onActionAddHandler, onActionHandler ) <-
+    liftIO newAddHandler
+
+  ( onRenderAddHandler, onRenderHandler ) <-
+    liftIO newAddHandler
+
+  ( onPhysicsStepAddHandler, onPhysicsStepHandler ) <-
+    liftIO newAddHandler
+
+  return
+    ( InputOutput { .. }
+    , do
+        onRender <-
+          fromAddHandler onRenderAddHandler
+
+        onAction <-
+          fromAddHandler onActionAddHandler
+
+        onPhysicsStep <-
+          fromAddHandler onPhysicsStepAddHandler
+
+        model <-
+          Quake3.Model.quake3 onAction onPhysicsStep
+
+        reactimate
+          ( Quake3.Render.updateFromModel resources
+              <$> ( model <@ onRender )
+          )
+    )
+
+
+tick
   :: MonadIO m
   => Context
-  -> Quake3.Render.Resources
   -> [ Vulkan.VkCommandBuffer ]
-  -> IORef Quake3.Model.Quake3State
+  -> IORef Bool
+  -> InputOutput
   -> m ()
-frame Context{..} resources commandBuffers stateRef = do
-  events <-
-    SDL.pollEvents
+tick ctx@Context{..} commandBuffers isRunningRef io@InputOutput{..} = do
+  isRunning <-
+    readIORef isRunningRef
 
-  s0 <-
-    readIORef stateRef
+  if isRunning
+    then tick'
+    else return ()
 
-  let
-    s1 =
-      Quake3.Model.step s0 ( foldMap Quake3.Input.eventToAction events )
+  where
 
-  writeIORef stateRef s1
+    tick' = do
+      events <-
+        SDL.pollEvents
 
-  Quake3.Render.updateFromModel resources s1
+      liftIO
+        ( traverse_
+            ( traverse_ onActionHandler . Quake3.Input.eventToAction )
+            events
+        )
 
-  nextImageIndex <-
-    acquireNextImage device swapchain nextImageSem
+      liftIO ( onPhysicsStepHandler 0.01 )
 
-  let
-    commandBuffer =
-      commandBuffers !! nextImageIndex
+      liftIO ( onRenderHandler () )
 
-  submitCommandBuffer queue commandBuffer nextImageSem submitted
+      nextImageIndex <-
+        acquireNextImage device swapchain nextImageSem
 
-  present queue swapchain nextImageIndex submitted
+      let
+        commandBuffer =
+          commandBuffers !! nextImageIndex
 
-  -- TODO Replace with fences
-  liftIO ( Vulkan.vkQueueWaitIdle queue )
-    >>= throwVkResult
+      submitCommandBuffer queue commandBuffer nextImageSem submitted
 
+      present queue swapchain nextImageIndex submitted
+
+      -- TODO Replace with fences
+      liftIO ( Vulkan.vkQueueWaitIdle queue )
+        >>= throwVkResult
+
+      tick ctx commandBuffers isRunningRef io

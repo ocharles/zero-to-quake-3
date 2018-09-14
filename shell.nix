@@ -22,7 +22,7 @@ let
     haskellPackages.ghcWithHoogle
       ( hs:
         with hs;
-        [ managed sdl2 unliftio vulkan-api generic-deriving ]
+        [ managed sdl2 unliftio vulkan-api generic-deriving reactive-banana generic-lens ]
       );
 
 in

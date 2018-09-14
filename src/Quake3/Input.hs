@@ -3,9 +3,6 @@
 
 module Quake3.Input where
 
--- linear
-import Linear
-
 -- sdl2
 import qualified SDL
 import qualified SDL.Event
@@ -14,12 +11,12 @@ import qualified SDL.Event
 import qualified Quake3.Model
 
 
-eventToAction :: SDL.Event -> Quake3.Model.Action
+eventToAction :: SDL.Event -> Maybe Quake3.Model.Action
 eventToAction =
   eventPayloadToAction . SDL.Event.eventPayload
 
 
-eventPayloadToAction :: SDL.EventPayload -> Quake3.Model.Action
+eventPayloadToAction :: SDL.EventPayload -> Maybe Quake3.Model.Action
 eventPayloadToAction = \case
   SDL.Event.KeyboardEvent e ->
     keyboardEventToAction e
@@ -28,41 +25,25 @@ eventPayloadToAction = \case
     mouseMotionEventToAction e
 
   _ ->
-    mempty
+    Nothing
 
 
-keyboardEventToAction :: SDL.KeyboardEventData -> Quake3.Model.Action
-keyboardEventToAction SDL.Event.KeyboardEventData{..} | keyboardEventKeyMotion == SDL.Event.Pressed =
-  Quake3.Model.Action
-    { impulse =
-        pure
-          ( case SDL.keysymScancode keyboardEventKeysym of
-              SDL.ScancodeW ->
-                V3 0 0 (-10)
+keyboardEventToAction :: SDL.KeyboardEventData -> Maybe Quake3.Model.Action
+keyboardEventToAction SDL.Event.KeyboardEventData{..} =
+  case SDL.keysymScancode keyboardEventKeysym of
+    SDL.ScancodeW ->
+      Just
+        ( Quake3.Model.ToggleRunForward
+            ( keyboardEventKeyMotion == SDL.Event.Pressed )
+        )
 
-              SDL.ScancodeS ->
-                V3 0 0 0.1
-
-              SDL.ScancodeA ->
-                V3 (-0.1) 0 0
-
-              SDL.ScancodeD ->
-                V3 10 0 0
-
-              _ ->
-                0
-          )
-    , rotate =
-        mempty
-    }
-keyboardEventToAction _ =
-  mempty
+    _ ->
+      Nothing
 
 
-mouseMotionEventToAction :: SDL.MouseMotionEventData -> Quake3.Model.Action
+mouseMotionEventToAction :: SDL.MouseMotionEventData -> Maybe Quake3.Model.Action
 mouseMotionEventToAction SDL.MouseMotionEventData{..} =
-  Quake3.Model.Action
-    { impulse = mempty
-    , rotate =
-        pure ( fmap ( ( / 100 ) . fromIntegral ) mouseMotionEventRelMotion )
-    }
+  Just
+    ( Quake3.Model.TurnBy
+        ( fmap ( ( / 100 ) . fromIntegral ) mouseMotionEventRelMotion )
+    )
