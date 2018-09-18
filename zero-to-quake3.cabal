@@ -22,6 +22,9 @@ executable zero-to-quake3
     Foreign.Marshal.Extra
     Foreign.Vulkan
     Quake3.BSP
+    Quake3.BSP.Entities
+    Quake3.Entity
+    Quake3.Entity.InfoPlayerDeathmatch
     Quake3.Context
     Quake3.Input
     Quake3.Model
@@ -52,6 +55,7 @@ executable zero-to-quake3
                      , sdl2 >=2.4 && <2.5
                      , vulkan-api
                      , managed
+                     , containers
                      , bytestring
                      , linear
                      , lens
@@ -61,6 +65,9 @@ executable zero-to-quake3
                      , contravariant
                      , reactive-banana
                      , generic-lens
+                     , clock
+                     , megaparsec
+                     , text
   extra-libraries: vulkan
   hs-source-dirs:      src
   default-language:    Haskell2010

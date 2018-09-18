@@ -1,7 +1,7 @@
 {-# language RecordWildCards #-}
 
 module Quake3.Render
-  ( Resources
+  ( Resources( bsp )
   , initResources
   , renderToFrameBuffer
   , updateFromModel
@@ -78,13 +78,13 @@ data Resources = Resources
   { vertexBuffer :: VertexBuffer VertexList
   , indexBuffer :: IndexBuffer MeshVertList
   , uniformBuffer :: UniformBuffer ( M44 Foreign.C.CFloat )
-  , q3dm1 :: BSP
+  , bsp :: BSP -- TODO Should Render own this?
   }
 
 
 initResources :: MonadManaged m => Context -> m Resources
 initResources Context{..} = do
-  q3dm1 <-
+  bsp <-
     loadBSP "q3dm1.bsp"
 
   vertexBuffer <-
@@ -92,14 +92,14 @@ initResources Context{..} = do
       physicalDevice
       device
       ( contramap vertexListBytes Vulkan.Poke.pokeLazyBytestring )
-      ( bspVertices q3dm1 )
+      ( bspVertices bsp )
 
   indexBuffer <-
     createIndexBuffer
       physicalDevice
       device
       ( contramap meshVertListBytes Vulkan.Poke.pokeLazyBytestring )
-      ( bspMeshVerts q3dm1 )
+      ( bspMeshVerts bsp )
 
   uniformBuffer <-
     createUniformBuffer
@@ -131,8 +131,8 @@ renderToFrameBuffer Context{..} Resources{..} framebuffer = do
       bindDescriptorSets commandBuffer pipelineLayout [ descriptorSet ]
 
       liftIO
-        ( for_ ( bspFaces q3dm1 ) $ \face ->
-            when ( faceType face == 1 ) $
+        ( for_ ( bspFaces bsp ) $ \face ->
+            when ( faceType face `elem` [ 1, 3 ] ) $
               Vulkan.vkCmdDrawIndexed
                 commandBuffer
                 ( fromIntegral ( faceNMeshVerts face ) ) -- ( fromIntegral nIndices )
@@ -183,10 +183,10 @@ modelViewProjection cameraPosition ( V2 x y ) =
 
     correction =
       V4
-        ( V4 1 0    0     0     )
-        ( V4 0 (-1) 0     0     )
-        ( V4 0 0    (1/2) (1/2) )
-        ( V4 0 0    0     1     )
+        ( V4 (-1) 0    0     0     )
+        ( V4 0    (-1) 0     0     )
+        ( V4 0    0    (1/2) (1/2) )
+        ( V4 0    0    0     1     )
 
   in
   transpose ( correction !*! projection !*! view !*! model )

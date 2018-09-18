@@ -1,5 +1,6 @@
 {-# language DataKinds #-}
 {-# language DeriveGeneric #-}
+{-# language DisambiguateRecordFields #-}
 {-# language RecordWildCards #-}
 {-# language TypeApplications #-}
 
@@ -10,6 +11,9 @@ module Quake3.Model
   ) where
 
 -- base
+import Data.List ( sortOn )
+import Data.Maybe ( mapMaybe )
+import Data.Ord ( Down(..) )
 import qualified Foreign.C
 import GHC.Generics ( Generic )
 
@@ -26,6 +30,10 @@ import qualified Linear.Quaternion as Quaternion
 -- reactive-banana
 import Reactive.Banana
 
+-- zero-to-quake3
+import qualified Quake3.Entity
+import qualified Quake3.Entity.InfoPlayerDeathmatch as InfoPlayerDeathmatch
+
 
 data Quake3State = Quake3State
   { cameraPosition :: V3 Foreign.C.CFloat
@@ -40,8 +48,34 @@ data Action
   deriving ( Generic )
 
 
-quake3 :: MonadMoment m => Event Action -> Event Double -> m ( Behavior Quake3State )
-quake3 onAction onPhysicsStep = do
+quake3
+  :: MonadMoment m
+  => [ Quake3.Entity.Entity ]
+  -> Event Action
+  -> Event Double
+  -> m ( Behavior Quake3State )
+quake3 initialEntities onAction onPhysicsStep = do
+  let
+    spawnPoints =
+      sortOn
+        ( Down . ( Just 1 == ) . InfoPlayerDeathmatch.spawnFlags )
+        ( mapMaybe
+            ( preview ( _As @"InfoPlayerDeathmatch" ) )
+            initialEntities
+        )
+
+    initialSpawnPoint =
+      case spawnPoints of
+        [] ->
+          InfoPlayerDeathmatch.InfoPlayerDeathmatch
+            { origin = 0
+            , angle = 0
+            , spawnFlags = Nothing
+            }
+
+        ( a : _ ) ->
+          a
+
   runningForward <-
     stepper
       False
@@ -59,7 +93,14 @@ quake3 onAction onPhysicsStep = do
       filterJust ( preview ( _As @"TurnBy" ) <$> onAction )
 
   cameraAngles <-
-    accumB ( V2 0 0 ) ( subtract <$> onTurn )
+    accumB
+      ( V2
+          ( degToRad
+              ( fromIntegral ( InfoPlayerDeathmatch.angle initialSpawnPoint ) )
+          )
+          0
+      )
+      ( subtract . liftA2 (*) ( V2 (-1) 1 ) <$> onTurn )
 
   let
     orientations =
@@ -71,7 +112,9 @@ quake3 onAction onPhysicsStep = do
       Quaternion.rotate <$> orientations <@> ( velocity <@ onPhysicsStep )
 
   cameraPositions <-
-    accumB ( V3 0 0 0 ) ( (+) <$> onForward )
+    accumB
+      ( fromIntegral <$> InfoPlayerDeathmatch.origin initialSpawnPoint )
+      ( (+) <$> onForward )
 
   return
     ( Quake3State
@@ -79,3 +122,8 @@ quake3 onAction onPhysicsStep = do
         <*> cameraAngles
         <*> orientations
     )
+
+
+degToRad :: Floating a => a -> a
+degToRad x =
+  x * ( pi / 180 )

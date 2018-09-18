@@ -21,7 +21,9 @@ Trying to build as much of Quake 3 as I can using Haskell & Vulkan.
 
 ** [ ] Move logging from main to functions themselves :refactoring:
 
-** [ ] Fixed physics timestep :correctness:
+* <2018-09-18 Tue>
+** [X] Fixed physics timestep :correctness:
+** [X] Parse the entities lump for the initial spawn point :correctness:
 * <2018-09-14 Fri>
 ** [X] Better input handling :correctness:
 * <2018-09-13 Thu>

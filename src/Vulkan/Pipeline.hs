@@ -77,7 +77,7 @@ createPipeline device renderPass extent layout0 vertexFormat = do
         &* Vulkan.set @"depthBiasSlopeFactor" 0
         &* Vulkan.set @"depthBiasClamp" 0
         &* Vulkan.set @"depthBiasConstantFactor" 0
-        &* Vulkan.set @"frontFace" Vulkan.VK_FRONT_FACE_COUNTER_CLOCKWISE
+        &* Vulkan.set @"frontFace" Vulkan.VK_FRONT_FACE_CLOCKWISE
         &* Vulkan.set @"cullMode" Vulkan.VK_CULL_MODE_BACK_BIT
         )
 

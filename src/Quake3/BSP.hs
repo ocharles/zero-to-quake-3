@@ -7,8 +7,10 @@ module Quake3.BSP ( BSP(..), Face(..), MeshVertList(..), VertexList(..), loadBSP
 import Control.Applicative ( liftA2, liftA3 )
 import Control.Monad ( guard, replicateM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
+import Control.Exception ( throwIO )
 import Data.Char ( ord )
 import Data.Foldable ( traverse_ )
+import Data.Function ( (&) )
 import Data.Int ( Int32 )
 
 -- binary
@@ -16,6 +18,16 @@ import qualified Data.Binary.Get
 
 -- bytestring
 import qualified Data.ByteString.Lazy
+
+-- containers
+import qualified Data.Map.Strict as Map
+
+-- text
+import qualified Data.Text as StrictText
+import qualified Data.Text.Encoding as StrictText
+
+-- zero-to-quake3
+import qualified Quake3.BSP.Entities
 
 
 data DirEntry = DirEntry
@@ -26,7 +38,8 @@ data DirEntry = DirEntry
 
 
 data BSP = BSP
-  { bspVertices :: VertexList
+  { bspEntities :: [ Quake3.BSP.Entities.EntityProperties ]
+  , bspVertices :: VertexList
   , bspMeshVerts :: MeshVertList
   , bspFaces :: [ Face ]
   }
@@ -62,7 +75,7 @@ getBSP = do
   fileBytes <-
     Data.Binary.Get.lookAhead Data.Binary.Get.getRemainingLazyByteString
 
-  [ _entities
+  [ entities
     , _textures
     , _planes
     , _nodes
@@ -89,9 +102,19 @@ getBSP = do
 
     replicateM 17 getDirEntry
 
+  entities <-
+    lookupBytes entities fileBytes
+      & Data.ByteString.Lazy.takeWhile ( /= 0 )
+      & Data.ByteString.Lazy.toStrict
+      & StrictText.decodeUtf8
+      & Quake3.BSP.Entities.parseEntityDefinitions
+      & either ( fail . show ) return
+
   return
     BSP
-      { bspVertices =
+      { bspEntities =
+          entities
+      , bspVertices =
           VertexList ( lookupBytes vertexes fileBytes )
       , bspMeshVerts =
           MeshVertList ( lookupBytes meshVerts fileBytes )
