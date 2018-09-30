@@ -8,10 +8,11 @@ module Quake3.Render
   ) where
 
 -- base
-import Control.Monad ( when )
+import Debug.Trace
+import Control.Monad ( guard, when )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Coerce ( coerce )
-import Data.Foldable ( for_ )
+import Data.Foldable ( foldMap, for_ )
 import qualified Foreign.C
 
 -- contravariant
@@ -39,6 +40,7 @@ import Control.Monad.Managed ( MonadManaged )
 import qualified Graphics.Vulkan as Vulkan ()
 import qualified Graphics.Vulkan.Core_1_0 as Vulkan
   ( vkCmdDrawIndexed
+  , vkCmdDraw
   , VkCommandBuffer
   , VkFramebuffer
   )
@@ -46,9 +48,11 @@ import qualified Graphics.Vulkan.Ext.VK_KHR_surface as Vulkan ()
 import qualified Graphics.Vulkan.Ext.VK_KHR_swapchain as Vulkan ()
 
 -- zero-to-quake-3
+import qualified Quake3.BezierPatch
 import Quake3.BSP
 import Quake3.Context ( Context(..) )
 import qualified Quake3.Model
+import qualified Quake3.Vertex
 import Vulkan.Buffer ( pokeBuffer )
 import Vulkan.Buffer.IndexBuffer
   ( IndexBuffer
@@ -77,6 +81,11 @@ import Vulkan.RenderPass ( withRenderPass )
 data Resources = Resources
   { vertexBuffer :: VertexBuffer VertexList
   , indexBuffer :: IndexBuffer MeshVertList
+
+  , bezierVerts :: VertexBuffer [ Quake3.Vertex.Vertex ]
+  , bezierIndices :: IndexBuffer [ Int ]
+  , bezierDraw :: Int
+
   , uniformBuffer :: UniformBuffer ( M44 Foreign.C.CFloat )
   , bsp :: BSP -- TODO Should Render own this?
   }
@@ -91,14 +100,14 @@ initResources Context{..} = do
     createVertexBuffer
       physicalDevice
       device
-      ( contramap vertexListBytes Vulkan.Poke.pokeLazyBytestring )
+      ( contramap vertexListBytes Vulkan.Poke.lazyBytestring )
       ( bspVertices bsp )
 
   indexBuffer <-
     createIndexBuffer
       physicalDevice
       device
-      ( contramap meshVertListBytes Vulkan.Poke.pokeLazyBytestring )
+      ( contramap meshVertListBytes Vulkan.Poke.lazyBytestring )
       ( bspMeshVerts bsp )
 
   uniformBuffer <-
@@ -107,6 +116,55 @@ initResources Context{..} = do
       device
       Vulkan.Poke.storable
       ( modelViewProjection 0 0 )
+
+  let
+    bezierTriangles = do
+      face <-
+        bspFaces bsp
+
+      guard ( faceType face == 2 )
+
+      let
+        controlPoints =
+          map
+            ( getVertex ( bspVertices bsp ) . fromIntegral )
+            ( take
+                ( fromIntegral ( faceNVertexes face ) )
+                ( iterate succ ( faceVertex face ) )
+            )
+
+      let
+        triangles =
+          Quake3.BezierPatch.tessellate
+            ( fromIntegral <$> uncurry V2 ( faceSize face ) )
+            controlPoints
+
+      triangles
+
+    bezierVertices =
+      concatMap ( foldMap pure ) bezierTriangles
+
+  let
+    bezierDraw =
+      length bezierVertices
+
+  liftIO $ do
+    print ( map Quake3.Vertex.vPos bezierVertices )
+    print bezierDraw
+
+  bezierVerts <-
+    createVertexBuffer
+      physicalDevice
+      device
+      ( Vulkan.Poke.list Quake3.Vertex.poke )
+      bezierVertices
+
+  bezierIndices <-
+    createIndexBuffer
+      physicalDevice
+      device
+      ( Vulkan.Poke.list Vulkan.Poke.storable )
+      [ 0 .. length bezierVertices ]
 
   updateDescriptorSet device descriptorSet uniformBuffer
 
@@ -121,10 +179,6 @@ renderToFrameBuffer Context{..} Resources{..} framebuffer = do
     allocateCommandBuffer device commandPool
 
   withCommandBuffer commandBuffer $ do
-    bindVertexBuffers commandBuffer [ vertexBuffer ]
-
-    bindIndexBuffer commandBuffer indexBuffer
-
     withRenderPass commandBuffer renderPass framebuffer extent $ do
       bindPipeline commandBuffer graphicsPipeline
 
@@ -132,14 +186,29 @@ renderToFrameBuffer Context{..} Resources{..} framebuffer = do
 
       liftIO
         ( for_ ( bspFaces bsp ) $ \face ->
-            when ( faceType face `elem` [ 1, 3 ] ) $
-              Vulkan.vkCmdDrawIndexed
-                commandBuffer
-                ( fromIntegral ( faceNMeshVerts face ) ) -- ( fromIntegral nIndices )
-                1
-                ( fromIntegral ( faceMeshVert face ) )
-                ( fromIntegral ( faceVertex face ) )
-                0
+            case faceType face of
+              n | n `elem` [ 1, 3 ] -> do
+                bindVertexBuffers commandBuffer [ vertexBuffer ]
+
+                bindIndexBuffer commandBuffer indexBuffer
+
+                Vulkan.vkCmdDrawIndexed
+                  commandBuffer
+                  ( fromIntegral ( faceNMeshVerts face ) )
+                  1
+                  ( fromIntegral ( faceMeshVert face ) )
+                  ( fromIntegral ( faceVertex face ) )
+                  0
+
+              2 -> do
+                bindVertexBuffers commandBuffer [ bezierVerts ]
+
+                bindIndexBuffer commandBuffer bezierIndices
+
+                Vulkan.vkCmdDraw commandBuffer ( fromIntegral bezierDraw ) 1 0 0
+
+              _ ->
+                return ()
         )
 
   return commandBuffer
@@ -148,7 +217,8 @@ renderToFrameBuffer Context{..} Resources{..} framebuffer = do
 updateFromModel
   :: MonadIO m
   => Resources -> Quake3.Model.Quake3State -> m ()
-updateFromModel Resources{..} Quake3.Model.Quake3State{..} =
+updateFromModel Resources{..} Quake3.Model.Quake3State{..} = do
+  liftIO ( print cameraPosition )
   pokeBuffer
     ( coerce uniformBuffer )
     ( modelViewProjection cameraPosition cameraAngles )

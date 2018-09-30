@@ -1,7 +1,14 @@
 {-# language NamedFieldPuns #-}
 {-# language RecordWildCards #-}
 
-module Quake3.BSP ( BSP(..), Face(..), MeshVertList(..), VertexList(..), loadBSP ) where
+module Quake3.BSP
+  ( BSP(..)
+  , Face(..)
+  , MeshVertList(..)
+  , VertexList(..)
+  , getVertex
+  , loadBSP
+  ) where
 
 -- base
 import Control.Applicative ( liftA2, liftA3 )
@@ -28,6 +35,8 @@ import qualified Data.Text.Encoding as StrictText
 
 -- zero-to-quake3
 import qualified Quake3.BSP.Entities
+import qualified Quake3.Vertex
+import qualified Vulkan.VertexFormat
 
 
 data DirEntry = DirEntry
@@ -50,6 +59,18 @@ newtype VertexList = VertexList
   { vertexListBytes :: Data.ByteString.Lazy.ByteString
   }
   deriving ( Show )
+
+
+getVertex :: VertexList -> Int -> Quake3.Vertex.Vertex
+getVertex ( VertexList bytes ) n = do
+  Data.Binary.Get.runGet
+    ( Vulkan.VertexFormat.parse Quake3.Vertex.vertexFormat )
+    ( Data.ByteString.Lazy.drop ( fromIntegral ( n * sizeOfVertex ) ) bytes )
+
+  where
+
+    sizeOfVertex =
+      Vulkan.VertexFormat.strideSize Quake3.Vertex.vertexFormat
 
 
 newtype MeshVertList = MeshVertList

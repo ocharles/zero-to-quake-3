@@ -1,6 +1,6 @@
 {-# language RecordWildCards #-}
 
-module Quake3.Vertex ( vertexFormat ) where
+module Quake3.Vertex ( Vertex(..), vertexFormat, poke ) where
 
 -- base
 import Data.Word ( Word8 )
@@ -14,6 +14,7 @@ import Data.Functor.Contravariant.Divisible ( Divisible, divided )
 import Linear
 
 -- zero-to-quake3
+import Vulkan.Poke
 import Vulkan.VertexFormat
 
 
@@ -23,16 +24,16 @@ data Vertex = Vertex
   , vLightmapUV :: V2 Foreign.C.CFloat
   , vNormal :: V3 Foreign.C.CFloat
   , vColor :: V4 Word8
-  }
+  } deriving ( Show )
 
 vertexFormat :: VertexFormat Vertex
 vertexFormat =
-  vertex
-    >$< v3_32sfloat
-    >*< v2_32sfloat
-    >*< v2_32sfloat
-    >*< v3_32sfloat
-    >*< v4_8uint
+  Vertex
+    <$> v3_32sfloat
+    <*> v2_32sfloat
+    <*> v2_32sfloat
+    <*> v3_32sfloat
+    <*> v4_8uint
 
   where
 
@@ -44,3 +45,18 @@ vertexFormat =
 (>*<) = divided
 
 infixr 5 >*<
+
+
+poke :: Poke Vertex
+poke =
+  vertex
+    >$< storable
+    >*< storable
+    >*< storable
+    >*< storable
+    >*< storable
+
+  where
+
+    vertex Vertex{..} =
+      ( vPos, ( vSurfaceUV, ( vLightmapUV, ( vNormal, vColor ) ) ) )

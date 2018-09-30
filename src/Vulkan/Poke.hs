@@ -1,8 +1,16 @@
 {-# language RecordWildCards #-}
 
-module Vulkan.Poke ( Poke, pokePtr, size, pokeLazyBytestring, storable, pokeList ) where
+module Vulkan.Poke
+  ( Poke
+  , pokePtr
+  , size
+  , lazyBytestring
+  , storable
+  , list
+  ) where
 
 -- base
+import Control.Monad ( zipWithM_ )
 import Data.Foldable ( traverse_ )
 import qualified Foreign
 import qualified Foreign.Marshal.Utils
@@ -67,8 +75,8 @@ instance Divisible Poke where
       }
 
 
-pokeLazyBytestring :: Poke Data.ByteString.Lazy.ByteString
-pokeLazyBytestring =
+lazyBytestring :: Poke Data.ByteString.Lazy.ByteString
+lazyBytestring =
   Poke
     { pokePtr =
         \dst a ->
@@ -85,17 +93,21 @@ pokeLazyBytestring =
     }
 
 
-pokeList :: Poke a -> Poke [ a ]
-pokeList Poke{..} =
+list :: Poke a -> Poke [ a ]
+list Poke{..} =
   Poke
     { pokePtr =
-        \ptr ->
-          traverse_
-            ( \x ->
-                pokePtr
-                  ( Foreign.castPtr ptr `Foreign.plusPtr` size x )
-                  x
-            )
+        \ptr xs -> do
+          let
+            offsets =
+              take
+                ( length xs )
+                ( iterate
+                    ( `Foreign.plusPtr` size ( head xs ) )
+                    ( Foreign.castPtr ptr )
+                )
+
+          zipWithM_ pokePtr offsets xs
     , size =
         sum . map size
     }
