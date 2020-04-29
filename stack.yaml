@@ -1,0 +1,6 @@
+resolver: lts-11.22
+extra-deps:
+  - reactive-banana-1.2.1.0
+  - sdl2-2.5.2.0
+  - vulkan-api-1.2.0.0
+allow-newer: true

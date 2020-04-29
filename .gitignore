@@ -1,5 +1,7 @@
 *.hi
 *.o
+.stack-work/
+/stack.yaml.lock
 dist-newstyle/
 dist/
 .ghc.environment*

@@ -59,10 +59,10 @@ createPipeline device renderPass extent layout0 vertexFormat = do
 
   -- TODO Remove hard coding
   vertexShader <-
-    loadShader device "/home/ollie/work/zero-to-quake3/vert.spv"
+    loadShader device "vert.spv"
 
   fragmentShader <-
-    loadShader device "/home/ollie/work/zero-to-quake3/frag.spv"
+    loadShader device "frag.spv"
 
   let
     rasterizationCreateInfo =
